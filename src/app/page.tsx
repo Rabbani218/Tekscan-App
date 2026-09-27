@@ -47,7 +47,7 @@ export default function HomePage() {
     }
   }, []);
 
-  // Save history to localStorage
+  // Save history to localStorage and sync to Aiven MySQL Database
   const saveToHistory = useCallback((rec: InspectionRecord) => {
     setHistoryRecords((prev) => {
       const updated = [rec, ...prev.slice(0, 49)];
@@ -58,6 +58,26 @@ export default function HomePage() {
       }
       return updated;
     });
+
+    // Cloud Database Sync (Aiven MySQL)
+    try {
+      fetch('/api/inspections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: rec.id,
+          batch_id: 'BATCH-2026-A1',
+          file_name: rec.fileName,
+          defect_class: rec.result.topPrediction.labelId,
+          defect_label: rec.defectLabel,
+          confidence: rec.confidence,
+          status: rec.status,
+          inspector_name: 'Petugas QC UBSI',
+        }),
+      }).catch((e) => console.log('[Aiven DB Sync] Offline or local fallback:', e));
+    } catch (e) {
+      // ignore
+    }
   }, []);
 
   const handleClearHistory = useCallback(() => {
