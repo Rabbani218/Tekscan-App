@@ -1,0 +1,12 @@
+{
+    "resize_width": 224,
+    "resize_height": 224,
+    "normalization": "division_by_255",
+    "channel_order": "RGB",
+    "expected_input_shape": [
+        1,
+        224,
+        224,
+        3
+    ]
+}
