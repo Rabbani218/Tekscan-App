@@ -1,35 +1,72 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import dynamic from 'next/dynamic';
+import Header from '@/components/Header';
 import UploadZone from '@/components/UploadZone';
+import FabricSamples from '@/components/FabricSamples';
+import QCReportPanel from '@/components/QCReportPanel';
+import BatchHistory from '@/components/BatchHistory';
+import DefectCatalog from '@/components/DefectCatalog';
+import ModelSpecs from '@/components/ModelSpecs';
+import CameraCapture from '@/components/CameraCapture';
 import LoadingState from '@/components/LoadingState';
 import type { InferenceResult } from '@/lib/inference';
+import type { InspectionRecord } from '@/lib/types';
+import type { SampleFabric } from '@/lib/fabricSamples';
 
-// Dynamically import ResultCard (not needed until result is shown)
-const ResultCard = dynamic(() => import('@/components/ResultCard'), {
-  loading: () => null,
-});
-
-type AppState =
-  | 'idle'          // No image uploaded yet
-  | 'imageReady'    // Image selected, ready to analyze
-  | 'loadingModel'  // TF.js model loading
-  | 'inferencing'   // Running inference
-  | 'done'          // Result ready
-  | 'error';        // Error occurred
+type ActiveTab = 'inspection' | 'history' | 'catalog' | 'specs';
 
 export default function HomePage() {
-  const [appState, setAppState] = useState<AppState>('idle');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('inspection');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [activeFileName, setActiveFileName] = useState<string>('sample_fabric.jpg');
   const [result, setResult] = useState<InferenceResult | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string>('');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingPhase, setProcessingPhase] = useState<'model' | 'inference'>('model');
   const [modelProgress, setModelProgress] = useState(0);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
 
-  const imageRef = useRef<HTMLImageElement | null>(null);
+  // Inspection history stored in localStorage
+  const [historyRecords, setHistoryRecords] = useState<InspectionRecord[]>([]);
+
   const currentObjectUrl = useRef<string | null>(null);
 
-  // Cleanup object URLs on unmount
+  // Load history from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('tekscan_qc_history');
+      if (saved) {
+        setHistoryRecords(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.error('Failed to load history:', e);
+    }
+  }, []);
+
+  // Save history to localStorage
+  const saveToHistory = useCallback((rec: InspectionRecord) => {
+    setHistoryRecords((prev) => {
+      const updated = [rec, ...prev.slice(0, 49)]; // keep max 50 records
+      try {
+        localStorage.setItem('tekscan_qc_history', JSON.stringify(updated));
+      } catch (e) {
+        console.error('Failed to persist history:', e);
+      }
+      return updated;
+    });
+  }, []);
+
+  const handleClearHistory = useCallback(() => {
+    setHistoryRecords([]);
+    try {
+      localStorage.removeItem('tekscan_qc_history');
+    } catch (e) {
+      console.error('Failed to clear history:', e);
+    }
+  }, []);
+
+  // Clean up object URLs on unmount
   useEffect(() => {
     return () => {
       if (currentObjectUrl.current) {
@@ -38,56 +75,87 @@ export default function HomePage() {
     };
   }, []);
 
+  // Handle image selected from upload or camera
   const handleImageSelected = useCallback((file: File, objectUrl: string) => {
-    // Revoke previous object URL
     if (currentObjectUrl.current) {
       URL.revokeObjectURL(currentObjectUrl.current);
     }
     currentObjectUrl.current = objectUrl;
     setPreviewUrl(objectUrl);
+    setActiveFileName(file.name);
     setResult(null);
-    setErrorMsg('');
-    setAppState('imageReady');
+    setErrorMsg(null);
   }, []);
 
+  // Handle sample selection from preset
+  const handleSelectSample = useCallback((sample: SampleFabric) => {
+    if (currentObjectUrl.current) {
+      URL.revokeObjectURL(currentObjectUrl.current);
+      currentObjectUrl.current = null;
+    }
+    setPreviewUrl(sample.dataUrl);
+    setActiveFileName(`${sample.name}.jpg`);
+    setResult(null);
+    setErrorMsg(null);
+  }, []);
+
+  // Run AI inference
   const handleAnalyze = useCallback(async () => {
     if (!previewUrl) return;
 
     try {
-      // Dynamically import inference only on client, only when needed
+      setIsProcessing(true);
+      setErrorMsg(null);
+
+      // Import TF.js inference engine
       const { loadModel, runInference } = await import('@/lib/inference');
 
-      // Phase 1: Load model
-      setAppState('loadingModel');
+      setProcessingPhase('model');
       setModelProgress(0);
       await loadModel((progress) => setModelProgress(progress));
 
-      // Phase 2: Run inference
-      setAppState('inferencing');
+      setProcessingPhase('inference');
 
-      // Create an image element for preprocessing
+      // Create Image Element for preprocessing
       const img = new Image();
       img.crossOrigin = 'anonymous';
 
       await new Promise<void>((resolve, reject) => {
         img.onload = () => resolve();
-        img.onerror = () => reject(new Error('Gagal memuat gambar untuk preprocessing'));
+        img.onerror = () => reject(new Error('Gagal memuat citra untuk preprocessing visual.'));
         img.src = previewUrl;
       });
 
-      imageRef.current = img;
       const inferenceResult = await runInference(img);
-
       setResult(inferenceResult);
-      setAppState('done');
+
+      // Record to history
+      const newRecord: InspectionRecord = {
+        id: `qc_${Date.now()}`,
+        timestamp: new Date().toLocaleTimeString('id-ID', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        }),
+        imageThumbnail: previewUrl,
+        fileName: activeFileName,
+        result: inferenceResult,
+        status: inferenceResult.topPrediction.isDefectFree ? 'PASSED' : 'REJECTED',
+        defectLabel: inferenceResult.topPrediction.label,
+        confidence: inferenceResult.topPrediction.confidence,
+      };
+      saveToHistory(newRecord);
     } catch (err) {
       console.error('Inference error:', err);
-      const message =
-        err instanceof Error ? err.message : 'Terjadi kesalahan tidak diketahui.';
-      setErrorMsg(message);
-      setAppState('error');
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : 'Terjadi kesalahan sistem saat menganalisis citra kain.'
+      );
+    } finally {
+      setIsProcessing(false);
     }
-  }, [previewUrl]);
+  }, [previewUrl, activeFileName, saveToHistory]);
 
   const handleReset = useCallback(() => {
     if (currentObjectUrl.current) {
@@ -96,276 +164,175 @@ export default function HomePage() {
     }
     setPreviewUrl(null);
     setResult(null);
-    setErrorMsg('');
-    setAppState('idle');
-    setModelProgress(0);
+    setErrorMsg(null);
   }, []);
 
-  const isProcessing =
-    appState === 'loadingModel' || appState === 'inferencing';
-
   return (
-    <>
-      {/* Animated background */}
-      <div className="bg-mesh" aria-hidden="true" />
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
+      {/* Top Enterprise Header */}
+      <Header
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        historyCount={historyRecords.length}
+      />
 
-      <div className="relative z-10 min-h-screen flex flex-col">
-        {/* ===== HEADER ===== */}
-        <header className="pt-12 pb-8 px-4 text-center">
-          {/* Logo mark */}
-          <div className="flex justify-center mb-5">
-            <div
-              className="w-16 h-16 rounded-2xl flex items-center justify-center relative"
-              style={{
-                background: 'linear-gradient(135deg, #1d4ed8, #0ea5e9)',
-                boxShadow: '0 0 40px rgba(37, 99, 235, 0.4)',
-              }}
-            >
-              <svg
-                className="w-9 h-9 text-white"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                aria-hidden="true"
-              >
-                <rect x="3" y="3" width="18" height="18" rx="2" strokeLinecap="round" />
-                <path d="M3 9h18M3 15h18M9 3v18M15 3v18" strokeLinecap="round" />
-                <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
-              </svg>
-              {/* Glow ring */}
-              <div
-                className="absolute inset-0 rounded-2xl"
-                style={{
-                  background: 'transparent',
-                  boxShadow: '0 0 0 1px rgba(255,255,255,0.15) inset',
-                }}
-              />
-            </div>
-          </div>
-
-          {/* Title */}
-          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight mb-3">
-            <span className="gradient-text">TEKSCAN</span>
-          </h1>
-          <p className="text-lg sm:text-xl font-medium text-slate-300 mb-2">
-            Deteksi Cacat Kain Tekstil
-          </p>
-          <p className="text-sm text-slate-500 max-w-lg mx-auto leading-relaxed">
-            Sistem berbasis kecerdasan buatan (MobileNetV2) untuk mendeteksi 6 jenis kondisi kain
-            secara otomatis langsung di browser Anda
-          </p>
-
-          {/* Accuracy badge */}
-          <div className="flex justify-center mt-4">
-            <div
-              className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-medium"
-              style={{
-                background: 'rgba(59, 130, 246, 0.1)',
-                border: '1px solid rgba(59, 130, 246, 0.25)',
-                color: '#93c5fd',
-              }}
-            >
-              <span
-                className="w-2 h-2 rounded-full bg-blue-400"
-                style={{ animation: 'pulse 2s ease-in-out infinite' }}
-              />
-              Model Akurasi 90.75% · F1-Macro 82.94% · 6 Kelas
-            </div>
-          </div>
-        </header>
-
-        {/* ===== MAIN CONTENT ===== */}
-        <main className="flex-1 px-4 pb-12">
-          <div className="max-w-2xl mx-auto space-y-6">
-
-            {/* Upload section */}
-            <section aria-labelledby="upload-section-title">
-              <h2 id="upload-section-title" className="sr-only">
-                Upload Gambar Kain
-              </h2>
-              <UploadZone
-                onImageSelected={handleImageSelected}
-                previewUrl={previewUrl}
-                disabled={isProcessing}
-              />
-            </section>
-
-            {/* Analyze button */}
-            {(appState === 'imageReady' || appState === 'done') && (
-              <div className="flex gap-3">
-                <button
-                  id="analyze-btn"
-                  onClick={handleAnalyze}
-                  disabled={isProcessing || appState !== 'imageReady'}
-                  className="btn-primary flex-1 flex items-center justify-center gap-2"
-                  aria-label="Analisis gambar kain untuk deteksi cacat"
-                >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                      d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                  </svg>
-                  Analisis Kain
-                </button>
-                <button
-                  id="reset-btn"
-                  onClick={handleReset}
-                  className="px-4 py-3 rounded-xl text-sm font-medium text-slate-400 transition-all hover:text-white"
-                  style={{
-                    background: 'rgba(255,255,255,0.05)',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                  }}
-                  aria-label="Reset dan upload gambar baru"
-                >
-                  Reset
-                </button>
+      {/* Main Container */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* TAB 1: INSPECTION STUDIO */}
+        {activeTab === 'inspection' && (
+          <div className="space-y-6">
+            {/* Top Overview Banner */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-800">
+              <div>
+                <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                  <span>Studio Inspeksi Cacat Kain</span>
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                    Live
+                  </span>
+                </h1>
+                <p className="text-xs text-slate-400 mt-1">
+                  Unggah atau ambil foto tekstur kain untuk deteksi otomatis cacat noda, lubang, garis, dan ketidakteraturan benang.
+                </p>
               </div>
-            )}
 
-            {/* Re-analyze button after done */}
-            {appState === 'done' && (
-              <div className="flex gap-3">
-                <button
-                  id="reanalyze-btn"
-                  onClick={handleAnalyze}
-                  className="btn-primary flex-1 flex items-center justify-center gap-2"
-                  aria-label="Analisis ulang gambar yang sama"
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  Analisis Ulang
-                </button>
-                <button
-                  id="new-image-btn"
-                  onClick={handleReset}
-                  className="flex-1 px-4 py-3 rounded-xl text-sm font-medium text-slate-300 transition-all hover:text-white"
-                  style={{
-                    background: 'rgba(255,255,255,0.05)',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                  }}
-                  aria-label="Upload gambar baru"
-                >
-                  Gambar Baru
-                </button>
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <span className="hidden sm:inline">Model: MobileNetV2 (90.75% Akurasi)</span>
               </div>
-            )}
+            </div>
 
-            {/* Loading state */}
-            {isProcessing && (
-              <LoadingState
-                phase={appState === 'loadingModel' ? 'model' : 'inference'}
-                modelProgress={modelProgress}
-              />
-            )}
+            {/* Main Responsive Grid: Studio Viewport (Left) & QC Panel (Right) */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              {/* Left Column: Input Studio (7 cols on Desktop) */}
+              <div className="lg:col-span-7 space-y-4">
+                <UploadZone
+                  onImageSelected={handleImageSelected}
+                  previewUrl={previewUrl}
+                  disabled={isProcessing}
+                  onOpenCamera={() => setIsCameraOpen(true)}
+                />
 
-            {/* Error state */}
-            {appState === 'error' && (
-              <div
-                className="glass rounded-2xl p-6 animate-fade-in"
-                style={{ border: '1px solid rgba(239, 68, 68, 0.3)' }}
-                role="alert"
-              >
-                <div className="flex items-start gap-3">
-                  <div
-                    className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5"
-                    style={{ background: 'rgba(239, 68, 68, 0.15)' }}
+                {/* Preset Fabric Samples */}
+                <FabricSamples
+                  onSelectSample={handleSelectSample}
+                  disabled={isProcessing}
+                />
+
+                {/* Main Action Analyze Button */}
+                {previewUrl && !result && (
+                  <button
+                    onClick={handleAnalyze}
+                    disabled={isProcessing}
+                    className="w-full py-3.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 active:scale-[0.99] text-white font-semibold text-sm shadow-lg shadow-blue-600/25 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
                   >
-                    <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
+                    <span>Mulai Analisis Kontrol Kualitas</span>
+                  </button>
+                )}
+
+                {/* Loading State Animation */}
+                {isProcessing && (
+                  <div className="bg-slate-900/60 rounded-xl p-6 border border-slate-800">
+                    <LoadingState phase={processingPhase} modelProgress={modelProgress} />
                   </div>
-                  <div>
-                    <h3 className="font-semibold text-red-400 mb-1">Terjadi Kesalahan</h3>
-                    <p className="text-sm text-slate-400 mb-3">{errorMsg}</p>
-                    <p className="text-xs text-slate-500">
-                      Pastikan file model tersedia di <code className="text-blue-400">/public/model/</code> dan
-                      coba refresh halaman.
-                    </p>
+                )}
+
+                {/* Error Banner */}
+                {errorMsg && (
+                  <div className="p-4 rounded-xl bg-rose-950/30 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-3">
+                    <svg className="w-5 h-5 text-rose-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <div>
+                      <p className="font-semibold text-rose-300">Gagal Memproses Citra</p>
+                      <p className="text-slate-400 mt-0.5">{errorMsg}</p>
+                    </div>
                   </div>
-                </div>
-                <button
-                  id="retry-btn"
-                  onClick={handleAnalyze}
-                  className="mt-4 w-full py-2.5 rounded-xl text-sm font-medium text-red-300 transition-all hover:text-white"
-                  style={{
-                    background: 'rgba(239, 68, 68, 0.1)',
-                    border: '1px solid rgba(239, 68, 68, 0.2)',
-                  }}
-                >
-                  Coba Lagi
-                </button>
+                )}
               </div>
-            )}
 
-            {/* Results */}
-            {appState === 'done' && result && (
-              <ResultCard result={result} />
-            )}
-
-            {/* Class legend — shown in idle state */}
-            {appState === 'idle' && (
-              <div className="glass rounded-2xl p-6 animate-fade-in">
-                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">
-                  Kelas yang Dapat Dideteksi
-                </h3>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                  {[
-                    { id: 'defect_free', label: 'Bebas Cacat', icon: '✅', safe: true },
-                    { id: 'stain', label: 'Noda', icon: '🟡', safe: false },
-                    { id: 'hole', label: 'Lubang', icon: '⭕', safe: false },
-                    { id: 'lines', label: 'Garis', icon: '〰️', safe: false },
-                    { id: 'horizontal', label: 'Cacat Horizontal', icon: '↔️', safe: false },
-                    { id: 'vertical', label: 'Cacat Vertikal', icon: '↕️', safe: false },
-                  ].map((cls) => (
-                    <div
-                      key={cls.id}
-                      className="flex items-center gap-2.5 p-3 rounded-xl transition-colors"
-                      style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
-                    >
-                      <span className="text-xl">{cls.icon}</span>
-                      <span className={`text-sm font-medium ${cls.safe ? 'text-emerald-400' : 'text-slate-300'}`}>
-                        {cls.label}
+              {/* Right Column: QC Report Panel (5 cols on Desktop) */}
+              <div className="lg:col-span-5">
+                {result ? (
+                  <QCReportPanel
+                    result={result}
+                    previewUrl={previewUrl}
+                    onReset={handleReset}
+                  />
+                ) : (
+                  <div className="bg-slate-900/40 rounded-xl p-8 border border-slate-800/80 text-center space-y-3">
+                    <div className="w-12 h-12 rounded-xl bg-slate-800/60 border border-slate-700/60 flex items-center justify-center mx-auto text-slate-500">
+                      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                    </div>
+                    <h3 className="text-sm font-semibold text-slate-300">
+                      Menunggu Input Citra Kain
+                    </h3>
+                    <p className="text-xs text-slate-400 max-w-xs mx-auto leading-relaxed">
+                      Pilih salah satu preset kain di atas atau unggah foto kain Anda sendiri, lalu klik tombol <strong className="text-slate-300">Mulai Analisis</strong> untuk melihat laporan inspeksi mutu.
+                    </p>
+                    <div className="pt-2">
+                      <span className="inline-block text-[11px] text-slate-400 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700">
+                        Inference 100% Client-Side WebGL
                       </span>
                     </div>
-                  ))}
-                </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        </main>
-
-        {/* ===== FOOTER ===== */}
-        <footer className="py-8 px-4 text-center border-t" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-          <div className="max-w-2xl mx-auto">
-            <div className="flex items-center justify-center gap-2 mb-3">
-              <div
-                className="w-6 h-6 rounded-lg flex items-center justify-center"
-                style={{ background: 'linear-gradient(135deg, #1d4ed8, #0ea5e9)' }}
-              >
-                <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 24 24" fill="none"
-                     stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                  <rect x="3" y="3" width="18" height="18" rx="2" />
-                  <path d="M3 9h18M9 3v18" />
-                </svg>
-              </div>
-              <span className="text-sm font-semibold text-slate-400">TEKSCAN</span>
             </div>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Demo akademik — Sistem Deteksi Cacat Kain Tekstil menggunakan
-              Transfer Learning MobileNetV2.{' '}
-              <br className="hidden sm:inline" />
-              Akurasi test <strong className="text-slate-500">90.75%</strong> · F1-Macro{' '}
-              <strong className="text-slate-500">82.94%</strong> · Dataset 6 kelas cacat kain.
-            </p>
-            <p className="text-xs text-slate-700 mt-2">
-              Inferensi berjalan sepenuhnya di browser menggunakan TensorFlow.js — data gambar tidak dikirim ke server.
-            </p>
           </div>
-        </footer>
-      </div>
-    </>
+        )}
+
+        {/* TAB 2: BATCH HISTORY */}
+        {activeTab === 'history' && (
+          <div className="space-y-4">
+            <div className="pb-2 border-b border-slate-800">
+              <h1 className="text-xl font-bold text-white">Log Riwayat Batch QC</h1>
+              <p className="text-xs text-slate-400 mt-1">
+                Catatan riwayat hasil uji inspeksi mutu yang tersimpan pada sesi peramban ini.
+              </p>
+            </div>
+            <BatchHistory
+              records={historyRecords}
+              onClearHistory={handleClearHistory}
+            />
+          </div>
+        )}
+
+        {/* TAB 3: DEFECT CATALOG */}
+        {activeTab === 'catalog' && <DefectCatalog />}
+
+        {/* TAB 4: MODEL SPECS */}
+        {activeTab === 'specs' && <ModelSpecs />}
+      </main>
+
+      {/* Live Camera Modal */}
+      {isCameraOpen && (
+        <CameraCapture
+          onCapture={handleImageSelected}
+          onClose={() => setIsCameraOpen(false)}
+        />
+      )}
+
+      {/* Industrial Footer */}
+      <footer className="mt-auto border-t border-slate-800/80 bg-slate-950 py-6 px-4">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-400">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-slate-300">TEKSCAN</span>
+            <span>—</span>
+            <span>Sistem Deteksi Cacat Kain Tekstil (MobileNetV2)</span>
+          </div>
+          <div className="text-slate-400 flex items-center gap-4">
+            <span>Akurasi: 90.75%</span>
+            <span>·</span>
+            <span>F1-Macro: 82.94%</span>
+            <span>·</span>
+            <span>6 Kelas Cacat</span>
+          </div>
+        </div>
+      </footer>
+    </div>
   );
 }

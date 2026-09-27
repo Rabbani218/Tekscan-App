@@ -6,20 +6,23 @@ interface UploadZoneProps {
   onImageSelected: (file: File, objectUrl: string) => void;
   previewUrl: string | null;
   disabled?: boolean;
+  onOpenCamera?: () => void;
 }
 
 export default function UploadZone({
   onImageSelected,
   previewUrl,
   disabled = false,
+  onOpenCamera,
 }: UploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const [showGrid, setShowGrid] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = useCallback(
     (file: File) => {
       if (!file.type.startsWith('image/')) {
-        alert('Hanya file gambar yang didukung (JPG, PNG, WEBP, dll.)');
+        alert('Format file tidak didukung. Mohon gunakan format citra (JPG, PNG, WEBP).');
         return;
       }
       const url = URL.createObjectURL(file);
@@ -59,25 +62,14 @@ export default function UploadZone({
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (file) handleFile(file);
-      // Reset input so same file can be re-selected
       e.target.value = '';
     },
     [handleFile]
   );
 
   return (
-    <div
-      id="upload-zone"
-      className={`drop-zone cursor-pointer select-none ${isDragging ? 'drag-over' : ''} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-      onDrop={handleDrop}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onClick={handleClick}
-      role="button"
-      tabIndex={0}
-      aria-label="Area upload gambar kain"
-      onKeyDown={(e) => e.key === 'Enter' && handleClick()}
-    >
+    <div className="bg-slate-900/60 rounded-xl p-4 border border-slate-800 space-y-3">
+      {/* Hidden File Input */}
       <input
         ref={inputRef}
         type="file"
@@ -85,70 +77,113 @@ export default function UploadZone({
         className="hidden"
         onChange={handleInputChange}
         disabled={disabled}
-        id="file-input"
-        aria-label="Pilih file gambar"
       />
 
+      {/* Main Viewport / Drop Area */}
       {previewUrl ? (
-        /* Preview state */
-        <div className="relative p-3">
+        <div className="relative aspect-video sm:aspect-[4/3] rounded-lg overflow-hidden bg-slate-950 border border-slate-800 flex items-center justify-center group">
           <img
             src={previewUrl}
-            alt="Preview gambar kain yang diupload"
-            className="w-full max-h-72 object-contain rounded-lg"
-            style={{ filter: 'drop-shadow(0 4px 16px rgba(0,0,0,0.5))' }}
+            alt="Citra kain yang diinspeksi"
+            className="w-full h-full object-contain"
           />
-          {/* Change image hint */}
-          <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity duration-300 rounded-lg"
-               style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)', margin: '0.75rem' }}>
-            <div className="text-center">
-              <svg className="w-8 h-8 mx-auto mb-2 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+
+          {/* Optional Inspection Optical Grid Overlay */}
+          {showGrid && (
+            <div
+              className="absolute inset-0 pointer-events-none grid grid-cols-6 grid-rows-6 opacity-30"
+              style={{
+                backgroundImage:
+                  'linear-gradient(to right, #3b82f6 1px, transparent 1px), linear-gradient(to bottom, #3b82f6 1px, transparent 1px)',
+                backgroundSize: '16.666% 16.666%',
+              }}
+            />
+          )}
+
+          {/* Quick Overlay Toolbar */}
+          <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-90 group-hover:opacity-100 transition-opacity">
+            <button
+              type="button"
+              onClick={() => setShowGrid(!showGrid)}
+              className={`p-1.5 rounded text-xs border ${
+                showGrid
+                  ? 'bg-blue-600 text-white border-blue-500'
+                  : 'bg-slate-900/80 text-slate-300 border-slate-700 hover:bg-slate-800'
+              }`}
+              title="Toggle Grid Inspeksi"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16M9 3v18M15 3v18" />
               </svg>
-              <p className="text-white text-sm font-medium">Ganti Gambar</p>
-            </div>
+            </button>
+            <button
+              type="button"
+              onClick={handleClick}
+              disabled={disabled}
+              className="px-2.5 py-1.5 rounded text-xs font-medium bg-slate-900/80 text-slate-200 border border-slate-700 hover:bg-slate-800 flex items-center gap-1"
+              title="Ganti citra"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              <span>Ganti</span>
+            </button>
           </div>
         </div>
       ) : (
-        /* Empty state */
-        <div className="flex flex-col items-center justify-center py-16 px-8 text-center">
-          {/* Icon */}
-          <div className="relative mb-6">
-            <div
-              className="w-20 h-20 rounded-2xl flex items-center justify-center"
-              style={{ background: 'linear-gradient(135deg, rgba(37,99,235,0.2), rgba(59,130,246,0.1))' }}
-            >
-              <svg className="w-10 h-10 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                  d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-              </svg>
-            </div>
-            {/* Decorative rings */}
-            {isDragging && (
-              <>
-                <div className="pulse-ring absolute inset-0 w-20 h-20 rounded-2xl border-2 border-blue-400 opacity-50" />
-                <div className="pulse-ring absolute inset-0 w-20 h-20 rounded-2xl border-2 border-blue-400 opacity-30"
-                     style={{ animationDelay: '0.5s' }} />
-              </>
-            )}
+        /* Empty State Dropzone */
+        <div
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onClick={handleClick}
+          className={`aspect-video sm:aspect-[4/3] rounded-lg border-2 border-dashed flex flex-col items-center justify-center p-6 text-center cursor-pointer transition-all ${
+            isDragging
+              ? 'border-blue-500 bg-blue-950/20'
+              : 'border-slate-800 hover:border-slate-700 bg-slate-950/40 hover:bg-slate-950/70'
+          }`}
+        >
+          <div className="w-12 h-12 rounded-xl bg-slate-800/80 border border-slate-700 flex items-center justify-center text-blue-400 mb-3">
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
           </div>
-
-          <h3 className="text-lg font-semibold text-slate-200 mb-2">
-            {isDragging ? 'Lepaskan gambar di sini' : 'Upload Gambar Kain'}
-          </h3>
-          <p className="text-sm text-slate-400 mb-4 max-w-xs">
-            Drag &amp; drop gambar ke sini, atau klik untuk memilih file dari perangkat Anda
+          <p className="text-sm font-semibold text-slate-200">
+            Tarik & Jatuhkan Citra Kain di Sini
           </p>
-          <div className="flex items-center gap-2 text-xs text-slate-500">
-            <span className="px-2 py-1 rounded-md" style={{ background: 'rgba(255,255,255,0.06)' }}>JPG</span>
-            <span className="px-2 py-1 rounded-md" style={{ background: 'rgba(255,255,255,0.06)' }}>PNG</span>
-            <span className="px-2 py-1 rounded-md" style={{ background: 'rgba(255,255,255,0.06)' }}>WEBP</span>
-            <span className="text-slate-600">•</span>
-            <span>Maks. 20 MB</span>
-          </div>
+          <p className="text-xs text-slate-400 mt-1">
+            atau klik untuk menjelajah file dari perangkat Anda (JPG, PNG, WEBP)
+          </p>
         </div>
       )}
+
+      {/* Input Action Controls (Upload File + Kamera) */}
+      <div className="grid grid-cols-2 gap-2 pt-1">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={handleClick}
+          className="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
+        >
+          <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+          </svg>
+          <span>Pilih File Citra</span>
+        </button>
+
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onOpenCamera}
+          className="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
+        >
+          <svg className="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+          <span>Buka Kamera</span>
+        </button>
+      </div>
     </div>
   );
 }
