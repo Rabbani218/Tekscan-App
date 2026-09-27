@@ -1,8 +1,8 @@
 'use client';
-
 import React, { useRef, useState } from 'react';
 import type { InferenceResult } from '@/lib/inference';
 import { INDUSTRIAL_SOP } from '@/lib/types';
+import QCSignatureStamp from './QCSignatureStamp';
 
 interface QCReportPanelProps {
   result: InferenceResult;
@@ -232,6 +232,15 @@ export default function QCReportPanel({
           </div>
         </div>
       </div>
+
+      {/* Digital QC Signature & ASTM 4-Point Grading Calculator */}
+      <QCSignatureStamp
+        isDefectFree={isDefectFree}
+        defectLabel={topPrediction.label}
+        confidence={topPrediction.confidence}
+        inspectorName={inspectorName}
+        batchId={rollBatchId}
+      />
 
       {/* Action Buttons */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 print:hidden">

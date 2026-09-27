@@ -10,6 +10,7 @@ import DefectCatalog from '@/components/DefectCatalog';
 import ModelSpecs from '@/components/ModelSpecs';
 import CameraCapture from '@/components/CameraCapture';
 import LoadingState from '@/components/LoadingState';
+import ImageFilters, { type FilterMode } from '@/components/ImageFilters';
 import type { InferenceResult } from '@/lib/inference';
 import type { InspectionRecord } from '@/lib/types';
 import type { SampleFabric } from '@/lib/fabricSamples';
@@ -26,6 +27,8 @@ export default function HomePage() {
   const [modelProgress, setModelProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [activeFilter, setActiveFilter] = useState<FilterMode>('normal');
+  const [filteredDisplayUrl, setFilteredDisplayUrl] = useState<string | null>(null);
 
   // Inspection history stored in localStorage
   const [historyRecords, setHistoryRecords] = useState<InspectionRecord[]>([]);
@@ -211,11 +214,21 @@ export default function HomePage() {
               <div className="lg:col-span-7 space-y-4">
                 <UploadZone
                   onImageSelected={handleImageSelected}
-                  previewUrl={previewUrl}
+                  previewUrl={filteredDisplayUrl && activeFilter !== 'normal' ? filteredDisplayUrl : previewUrl}
                   disabled={isProcessing}
                   onOpenCamera={() => setIsCameraOpen(true)}
                   fileName={activeFileName}
                 />
+
+                {/* Computer Vision Image Processing Morphology Filter Tools */}
+                {previewUrl && (
+                  <ImageFilters
+                    imageSrc={previewUrl}
+                    activeFilter={activeFilter}
+                    onFilterChange={setActiveFilter}
+                    onProcessedCanvas={(canvas) => setFilteredDisplayUrl(canvas.toDataURL())}
+                  />
+                )}
 
                 {/* Preset Fabric Samples */}
                 <FabricSamples
@@ -323,20 +336,38 @@ export default function HomePage() {
         />
       )}
 
-      {/* Clean White/Blue Footer */}
-      <footer className="mt-auto border-t border-slate-200 bg-white py-6 px-4 print:hidden">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-slate-800">TEKSCAN</span>
-            <span>—</span>
-            <span>Sistem Kontrol Kualitas Cacat Kain Tekstil (MobileNetV2)</span>
+      {/* Academic & Professional Footer */}
+      <footer className="mt-auto border-t border-slate-200 bg-white py-8 px-4 print:hidden">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6 text-xs text-slate-600">
+          {/* Left Attribution */}
+          <div className="flex flex-col sm:flex-row items-center gap-3 text-center sm:text-left">
+            <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-700 font-extrabold text-sm shadow-sm flex-shrink-0">
+              UBSI
+            </div>
+            <div>
+              <p className="font-bold text-slate-900 text-sm">
+                dibuat oleh Mahasiswa kelas 15.5C.01 Informatika universitas bina sarana informatika
+              </p>
+              <p className="text-slate-500 text-[11px] mt-0.5">
+                Project Tugas Akhir — Mata Kuliah Pengolahan Citra Digital (TEKSCAN MobileNetV2)
+              </p>
+            </div>
           </div>
-          <div className="text-slate-600 flex items-center gap-3 font-medium">
-            <span>Akurasi: 90.75%</span>
-            <span>·</span>
-            <span>F1-Macro: 82.94%</span>
-            <span>·</span>
-            <span>6 Kelas Cacat</span>
+
+          {/* Right Metrics & Accreditation */}
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <span className="px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-700 font-medium">
+              Kelas 15.5C.01
+            </span>
+            <span className="px-2.5 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-semibold">
+              Akurasi 90.75%
+            </span>
+            <span className="px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 font-semibold">
+              F1-Macro 82.94%
+            </span>
+            <span className="px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-600">
+              © 2026 TEKSCAN
+            </span>
           </div>
         </div>
       </footer>
