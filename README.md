@@ -1,43 +1,46 @@
 # TEKSCAN — Deteksi Cacat Kain Tekstil
 
-Demo aplikasi web berbasis AI untuk mendeteksi cacat kain tekstil secara real-time langsung di browser.
+Sistem inspeksi cacat kain tekstil modern berbasis kecerdasan buatan (*Deep Learning*) yang berjalan secara real-time langsung di sisi peramban (*in-browser edge inference*) menggunakan TensorFlow.js.
 
 ## 🧵 Tentang Proyek
 
-**TEKSCAN** adalah sistem deteksi cacat kain berbasis Transfer Learning (MobileNetV2) yang berjalan sepenuhnya di sisi klien menggunakan TensorFlow.js — tanpa server backend.
+**TEKSCAN** dikembangkan untuk otomatisasi kendali mutu (*Quality Control*) pada industri tekstil. Sistem menggunakan arsitektur **ResNet50 (Varian C)** dengan kalibrasi temperatur (*temperature scaling*), *Test-Time Augmentation* (TTA), dan *dual-threshold verification zone* untuk mengeliminasi kesalahan deteksi positif palsu (*false positive*).
 
 ### Kelas yang Dideteksi
 | ID Kelas | Label (Indonesia) | Deskripsi |
 |---|---|---|
-| `defect_free` | Bebas Cacat | Kain dalam kondisi baik |
-| `stain` | Noda | Kontaminasi pada permukaan |
-| `hole` | Lubang | Sobekan atau lubang |
-| `lines` | Garis | Guratan abnormal |
-| `horizontal` | Cacat Horizontal | Cacat melintang |
-| `vertical` | Cacat Vertikal | Cacat memanjang |
+| `defect_free` | Bebas Cacat | Kain dalam kondisi normal / standar |
+| `stain` | Noda | Kontaminasi zat cair / bercak asing |
+| `hole` | Lubang | Sobekan, bolong, atau kerusakan serat |
+| `lines` | Garis | Guratan benang cacat tidak beraturan |
+| `horizontal` | Cacat Horizontal | Cacat melintang searah pakan (*weft*) |
+| `vertical` | Cacat Vertikal | Cacat membujur searah lusi (*warp*) |
 
-### Performa Model
-- **Arsitektur**: MobileNetV2 (Transfer Learning)
-- **Akurasi Test**: 90.75%
-- **F1-Macro**: 82.94%
-- **Input**: 224 × 224 × 3 (RGB)
-- **Normalisasi**: Dibagi 255
+### Performa & Spesifikasi Model
+- **Arsitektur**: ResNet50 (Transfer Learning - Varian C)
+- **Akurasi Pengujian**: **93.50%**
+- **Macro F1-Score**: **89.27%**
+- **False Positive Rate (Bebas Cacat)**: **~2.11%** (turun ke **0.88%** setelah verifikasi zona manual)
+- **Ukuran Input**: 224 × 224 × 3 (RGB)
+- **Engine Inferensi**: TensorFlow.js WebGL / CPU fallback
 
 ## 🚀 Teknologi
 
-- **Next.js 14** (App Router)
-- **TypeScript**
-- **TailwindCSS**
-- **TensorFlow.js** (`@tensorflow/tfjs`)
+- **Frontend**: Next.js 14 (App Router), React 18, TypeScript, TailwindCSS
+- **Model Engine**: TensorFlow.js (`@tensorflow/tfjs`)
+- **Deployment**: Vercel & GitHub
 
-## 💻 Jalankan Lokal
+## 💻 Menjalankan Secara Lokal
 
-```bash
-npm install
-npm run dev
-```
-
-Buka [http://localhost:3000](http://localhost:3000)
+1. Pasang dependensi:
+   ```bash
+   npm install
+   ```
+2. Jalankan server pengembangan lokal:
+   ```bash
+   npm run dev
+   ```
+3. Buka peramban di [http://localhost:3000](http://localhost:3000)
 
 ## 🏗️ Build Produksi
 
@@ -46,33 +49,40 @@ npm run build
 npm start
 ```
 
-## 📁 Struktur File Penting
+## 📁 Struktur Repositori
 
 ```
 public/
-├── model/
-│   ├── model.json       # TF.js model descriptor
-│   └── *.bin            # Model weight shards
-├── class_names.json     # Urutan label kelas
-└── preprocessing_config.json
+└── models/
+    ├── active.json               # Pointer model aktif
+    └── resnet50-c/
+        ├── manifest.json         # Konfigurasi ambang batas, TTA, & metrik
+        ├── model.json            # TF.js model topology
+        └── group1-shard*.bin     # Bobot model (~94 MB terbagi dalam 23 shard)
 
 src/
 ├── app/
-│   ├── layout.tsx       # Root layout + SEO
-│   ├── page.tsx         # Halaman utama
+│   ├── layout.tsx                # Metadata root & tema
+│   ├── page.tsx                  # Dashboard inspeksi QC
 │   └── globals.css
 ├── components/
-│   ├── UploadZone.tsx   # Drag-and-drop upload
-│   ├── ResultCard.tsx   # Tampilan hasil prediksi
-│   └── LoadingState.tsx # Loading indicator
+│   ├── Header.tsx                # Header status model & sistem
+│   ├── UploadZone.tsx            # Drag & drop upload citra
+│   ├── ResultCard.tsx            # Kartu hasil prediksi & rekomendasi QC
+│   └── LoadingState.tsx          # Status pengunduhan bobot TF.js
 └── lib/
-    └── inference.ts     # TF.js inference engine
+    ├── inference.ts              # Engine inferensi model-agnostik
+    ├── preprocess.ts             # Preprocessing citra Varian C
+    └── decision.ts               # Mesin keputusan & anti-false-positive
+
+Model/                            # Dokumen akademik & prototype backend Flask
+scripts/                          # Skrip konversi TF.js & uji paritas
 ```
 
-## 🔒 Privasi
+## 🔒 Privasi & Kecepatan
 
-Semua pemrosesan gambar dilakukan sepenuhnya di browser pengguna. **Tidak ada gambar yang dikirim ke server.**
+Seluruh pemrosesan gambar dijalankan **100% di browser pengguna**. Tidak ada gambar yang diunggah ke server cloud, menjamin privasi penuh dan latensi minimal.
 
 ---
 
-*Demo akademik — Universitas Bina Sarana Informatika*
+*Proyek Tugas Akhir — Program Studi Informatika, Universitas Bina Sarana Informatika*
