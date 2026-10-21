@@ -1,0 +1,2 @@
+Tahap,Test_Accuracy,Test_Macro_F1,Test_FPR_defect_free
+Sebelum Retrain,0.93,0.86,0.02112676056338028

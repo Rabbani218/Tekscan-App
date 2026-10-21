@@ -32,10 +32,26 @@ next-env.d.ts
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+**/desktop.ini
 
 # Editor
 .vscode/
 .idea/
 
-# NOTE: public/model/ folder (model.json + *.bin files) MUST be committed!
-# Do NOT add public/model/ to this .gitignore — it is required for client-side inference.
+# Python
+__pycache__/
+*.pyc
+
+# NOTE: public/models/ folder (model.json + *.bin files) MUST be committed!
+# Do NOT add public/models/ to this .gitignore — it is required for client-side inference.
+
+# Large training artifacts (not needed by the web app)
+TEKSCAN_V2_Full_Package*.zip
+Model/*.keras
+Model/*.tflite
+Model/flask_app/*.keras
+Model/flask_app/*.tflite
+scripts/parity/
+scratch_w.h5
+

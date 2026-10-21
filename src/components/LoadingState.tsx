@@ -26,7 +26,7 @@ export default function LoadingState({ phase, modelProgress = 0 }: LoadingStateP
             Menginisialisasi Engine Model AI...
           </h3>
           <p className="text-xs text-slate-500 mb-3 max-w-sm mx-auto">
-            Memuat bobot MobileNetV2 (9.69 MB) ke memori GPU peramban (hanya pada analisis pertama).
+            Memuat bobot model (~94 MB) ke memori peramban. Hanya sekali; berikutnya memakai cache.
           </p>
           {/* Progress bar */}
           <div className="w-full max-w-xs mx-auto bg-slate-100 h-2 rounded-full overflow-hidden border border-slate-200 mb-2">

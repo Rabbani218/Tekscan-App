@@ -1,211 +1,178 @@
 /**
- * TEKSCAN — Robust In-Browser MobileNetV2 Inference Engine
+ * TEKSCAN — in-browser inference engine (TensorFlow.js), model-agnostic.
  *
- * Architecture:
- * - MobileNetV2 Base (Transfer Learning, 1280-dim feature extractor)
- * - GlobalAveragePooling2D
- * - Dense 128 (ReLU)
- * - Dropout 0.3
- * - Dense 6 (Softmax)
- *
- * Runs 100% directly in the user's browser via TensorFlow.js WebGL/WASM.
+ * The active model is selected via /models/active.json → /models/<id>/manifest.json.
+ * Swapping to a new model = drop a new TF.js model folder + manifest, change active.json.
  */
 
 'use client';
 
-export interface PredictionResult {
-  label: string;
-  labelId: string;
-  confidence: number;
-  isDefectFree: boolean;
+import { preprocess, INPUT_SIZE, type PreprocessKind } from './preprocess';
+import { decide, type Decision } from './decision';
+
+export interface ModelManifest {
+  id: string;
+  name: string;
+  version: string;
+  format: 'layers' | 'graph';
+  modelUrl: string;
+  inputSize: number;
+  preprocess: PreprocessKind;
+  outputType: 'softmax' | 'logits';
+  classNames: string[];
+  labelsID: Record<string, string>;
+  decision: { temperature: number; theta: number; delta: number; tta: string[] };
+  metrics: {
+    testAccuracy: number;
+    macroF1: number;
+    fprDefectFree: number;
+    fprAutoAfterVerification: number;
+    manualZonePct: number;
+    ece: number;
+  };
+  quality: { minSide: number; lumaMin: number; lumaMax: number };
 }
 
 export interface InferenceResult {
-  topPrediction: PredictionResult;
-  allPredictions: PredictionResult[];
+  decision: Decision;
+  manifest: ModelManifest;
+  imageSize: { width: number; height: number };
+  warnings: string[];
+  elapsedMs: number;
 }
 
-const CLASS_NAMES = [
-  'defect_free',
-  'stain',
-  'hole',
-  'lines',
-  'horizontal',
-  'vertical',
-];
+type TF = typeof import('@tensorflow/tfjs');
 
-const LABEL_MAP: Record<string, string> = {
-  defect_free: 'Bebas Cacat (Clean)',
-  stain: 'Noda (Stain)',
-  hole: 'Lubang (Hole)',
-  lines: 'Garis (Lines)',
-  horizontal: 'Cacat Horizontal',
-  vertical: 'Cacat Vertikal',
-};
+let tfPromise: Promise<TF> | null = null;
+let modelPromise: Promise<{ model: any; manifest: ModelManifest }> | null = null;
 
-interface HeadWeights {
-  w1: number[];
-  b1: number[];
-  w2: number[];
-  b2: number[];
-}
-
-let cachedTf: typeof import('@tensorflow/tfjs') | null = null;
-let cachedMobilenet: any = null;
-let cachedHeadWeights: HeadWeights | null = null;
-let initPromise: Promise<void> | null = null;
-
-async function getTf() {
-  if (cachedTf) return cachedTf;
-  const tf = await import('@tensorflow/tfjs');
-  try {
-    await tf.setBackend('webgl');
-    await tf.ready();
-  } catch {
-    await tf.setBackend('cpu');
-    await tf.ready();
-  }
-  cachedTf = tf;
-  return tf;
-}
-
-/**
- * Load MobileNetV2 feature extractor and head weights
- */
-export async function loadModel(onProgress?: (progress: number) => void): Promise<void> {
-  if (cachedMobilenet && cachedHeadWeights) {
-    onProgress?.(100);
-    return;
-  }
-
-  if (initPromise) {
-    return initPromise;
-  }
-
-  initPromise = (async () => {
-    onProgress?.(10);
-    const tf = await getTf();
-    onProgress?.(25);
-
-    // 1. Fetch trained Dense weights from /model/head_weights.json
-    try {
-      const resp = await fetch('/model/head_weights.json');
-      if (resp.ok) {
-        cachedHeadWeights = await resp.json();
+async function getTf(): Promise<TF> {
+  if (!tfPromise) {
+    tfPromise = (async () => {
+      const tf = await import('@tensorflow/tfjs');
+      try {
+        await tf.setBackend('webgl');
+        await tf.ready();
+      } catch {
+        await tf.setBackend('cpu');
+        await tf.ready();
       }
-    } catch (e) {
-      console.warn('[TEKSCAN] Could not fetch /model/head_weights.json, falling back:', e);
-    }
-    onProgress?.(55);
-
-    // 2. Load MobileNetV2 feature extractor
-    try {
-      const mobilenet = await import('@tensorflow-models/mobilenet');
-      cachedMobilenet = await mobilenet.load({ version: 2, alpha: 1.0 });
-      console.log('[TEKSCAN] MobileNetV2 feature extractor initialized');
-    } catch (err) {
-      console.warn('[TEKSCAN] MobileNetV2 CDN load warning, using tensor fallback:', err);
-    }
-
-    onProgress?.(100);
-  })();
-
-  try {
-    await initPromise;
-  } finally {
-    initPromise = null;
+      return tf;
+    })();
   }
+  return tfPromise;
 }
 
-/**
- * Execute forward inference on an HTMLImageElement
- */
-export async function runInference(
-  imageElement: HTMLImageElement,
-  onProgress?: (progress: number) => void
-): Promise<InferenceResult> {
-  const tf = await getTf();
-  await loadModel(onProgress);
+export async function loadManifest(): Promise<ModelManifest> {
+  const active = await (await fetch('/models/active.json', { cache: 'no-cache' })).json();
+  const res = await fetch(`/models/${active.active}/manifest.json`, { cache: 'no-cache' });
+  if (!res.ok) throw new Error(`Manifest model "${active.active}" tidak ditemukan.`);
+  return res.json();
+}
 
-  let probabilities: number[];
-
-  // Execute forward pass with WebGL memory management (tidy)
-  if (cachedMobilenet && cachedHeadWeights) {
-    probabilities = tf.tidy(() => {
-      // 1. Extract 1280-dim embedding vector from MobileNetV2
-      // infer(img, true) outputs the global average pooling activation [1, 1280]
-      const embedding = cachedMobilenet.infer(imageElement, true);
-
-      // 2. Convert trained head weights to TF tensors
-      const w1 = tf.tensor2d(cachedHeadWeights!.w1, [1280, 128]);
-      const b1 = tf.tensor1d(cachedHeadWeights!.b1);
-      const w2 = tf.tensor2d(cachedHeadWeights!.w2, [128, 6]);
-      const b2 = tf.tensor1d(cachedHeadWeights!.b2);
-
-      // 3. Dense 1: ReLU(embedding * W1 + b1)
-      const h1 = tf.relu(embedding.matMul(w1).add(b1));
-
-      // 4. Dense 2: Softmax(h1 * W2 + b2)
-      const logits = h1.matMul(w2).add(b2);
-      const probs = tf.softmax(logits);
-
-      return Array.from(probs.dataSync());
+export function loadModel(onProgress?: (pct: number) => void) {
+  if (!modelPromise) {
+    modelPromise = (async () => {
+      onProgress?.(3);
+      const tf = await getTf();
+      const manifest = await loadManifest();
+      onProgress?.(8);
+      const onFrac = (f: number) => onProgress?.(Math.round(8 + f * 90));
+      const model =
+        manifest.format === 'graph'
+          ? await tf.loadGraphModel(manifest.modelUrl, { onProgress: onFrac })
+          : await tf.loadLayersModel(manifest.modelUrl, { onProgress: onFrac });
+      // Warm-up: compile WebGL shaders so the first real prediction is fast.
+      tf.tidy(() => {
+        const z = tf.zeros([1, manifest.inputSize, manifest.inputSize, 3]);
+        (model.predict(z) as any).dataSync();
+      });
+      onProgress?.(100);
+      return { model, manifest };
+    })().catch((e) => {
+      modelPromise = null;
+      throw e;
     });
-  } else {
-    // High-precision heuristic fallback if network was completely blocked
-    probabilities = analyzeImageFallback(imageElement);
   }
-
-  // Format predictions
-  const predictions: PredictionResult[] = CLASS_NAMES.map((labelId, idx) => ({
-    labelId,
-    label: LABEL_MAP[labelId] || labelId,
-    confidence: probabilities[idx] ?? 0,
-    isDefectFree: labelId === 'defect_free',
-  }));
-
-  // Sort descending by confidence
-  predictions.sort((a, b) => b.confidence - a.confidence);
-
-  return {
-    topPrediction: predictions[0],
-    allPredictions: predictions,
-  };
+  return modelPromise;
 }
 
-/**
- * Visual morphology analyzer fallback (zero-dependency, instant on factory floor)
- */
-function analyzeImageFallback(imageElement: HTMLImageElement): number[] {
+const MAX_SIDE = 4096;
+
+function readPixels(img: HTMLImageElement) {
+  let w = img.naturalWidth;
+  let h = img.naturalHeight;
+  if (!w || !h) throw new Error('Gambar tidak valid.');
+  const k = Math.min(1, MAX_SIDE / Math.max(w, h));
+  w = Math.round(w * k);
+  h = Math.round(h * k);
   const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 128;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return [0.92, 0.02, 0.02, 0.02, 0.01, 0.01];
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('Canvas tidak tersedia.');
+  ctx.drawImage(img, 0, 0, w, h);
+  return ctx.getImageData(0, 0, w, h);
+}
 
-  ctx.drawImage(imageElement, 0, 0, 128, 128);
-  const data = ctx.getImageData(0, 0, 128, 128).data;
-
-  let darkPixels = 0;
-  let totalPixels = data.length / 4;
-  let horizVar = 0;
-  let vertVar = 0;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const lum = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-    if (lum < 50) darkPixels++;
+function qualityNotes(px: ImageData, orig: { w: number; h: number }, m: ModelManifest): string[] {
+  const notes: string[] = [];
+  if (Math.min(orig.w, orig.h) < m.quality.minSide) {
+    notes.push(`!Resolusi gambar terlalu kecil (${orig.w}×${orig.h}px, minimal ${m.quality.minSide}px).`);
   }
-
-  const darkRatio = darkPixels / totalPixels;
-
-  if (darkRatio > 0.08) {
-    // Lubang / Hole defect
-    return [0.03, 0.06, 0.82, 0.04, 0.03, 0.02];
-  } else if (darkRatio > 0.03) {
-    // Noda / Stain defect
-    return [0.05, 0.81, 0.04, 0.04, 0.03, 0.03];
-  } else {
-    // Bebas Cacat (Clean)
-    return [0.91, 0.03, 0.02, 0.02, 0.01, 0.01];
+  let sum = 0;
+  let n = 0;
+  const d = px.data;
+  const step = Math.max(1, Math.floor(d.length / 4 / 20000));
+  for (let i = 0; i < d.length; i += 4 * step) {
+    sum += d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+    n++;
   }
+  const mean = sum / n;
+  if (mean < m.quality.lumaMin) notes.push('!Gambar terlalu gelap.');
+  if (mean > m.quality.lumaMax) notes.push('!Gambar terlalu terang / overexposed.');
+  return notes;
+}
+
+export async function runInference(img: HTMLImageElement): Promise<InferenceResult> {
+  const t0 = performance.now();
+  const tf = await getTf();
+  const { model, manifest } = await loadModel();
+
+  const px = readPixels(img);
+  const notes = qualityNotes(px, { w: img.naturalWidth, h: img.naturalHeight }, manifest);
+  const size = manifest.inputSize || INPUT_SIZE;
+  const input = preprocess({ data: px.data, width: px.width, height: px.height }, manifest.preprocess, size);
+
+  const toProbs = (t: any): number[] => {
+    const arr = Array.from(t.dataSync() as Float32Array);
+    if (manifest.outputType === 'logits') {
+      const m = Math.max(...arr);
+      const ex = arr.map((v) => Math.exp(v - m));
+      const s = ex.reduce((a, b) => a + b, 0);
+      return ex.map((v) => v / s);
+    }
+    return arr;
+  };
+
+  const { base, aug } = tf.tidy(() => {
+    const x = tf.tensor4d(input, [1, size, size, 3]);
+    const base = toProbs(model.predict(x));
+    const aug: number[][] = [];
+    for (const kind of manifest.decision.tta) {
+      if (kind === 'flipH') aug.push(toProbs(model.predict(tf.reverse(x, [2]))));
+      else if (kind === 'flipV') aug.push(toProbs(model.predict(tf.reverse(x, [1]))));
+    }
+    return { base, aug };
+  });
+
+  const decision = decide(base, aug, manifest.classNames, manifest.decision, notes);
+  const warnings = notes.filter((n) => !n.startsWith('!'));
+  return {
+    decision,
+    manifest,
+    imageSize: { width: img.naturalWidth, height: img.naturalHeight },
+    warnings,
+    elapsedMs: Math.round(performance.now() - t0),
+  };
 }

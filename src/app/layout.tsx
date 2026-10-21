@@ -4,19 +4,18 @@ import './globals.css'
 export const metadata: Metadata = {
   title: 'TEKSCAN — Deteksi Cacat Kain Tekstil',
   description:
-    'Sistem deteksi cacat kain tekstil berbasis AI (MobileNetV2, Transfer Learning). Upload gambar kain untuk mendapatkan analisis cacat secara otomatis: noda, lubang, garis, cacat horizontal, dan cacat vertikal. Akurasi model 90.75%.',
+    'Deteksi cacat kain tekstil berbasis AI (ResNet50 terkalibrasi) langsung di browser: noda, lubang, garis, cacat horizontal dan vertikal, dengan zona verifikasi manual untuk mencegah false positive.',
   keywords: [
     'deteksi cacat kain',
     'fabric defect detection',
     'AI tekstil',
-    'MobileNetV2',
+    'ResNet50',
     'TensorFlow.js',
     'TEKSCAN',
   ],
   openGraph: {
     title: 'TEKSCAN — Deteksi Cacat Kain Tekstil',
-    description:
-      'Demo AI untuk deteksi cacat kain tekstil menggunakan MobileNetV2. Akurasi test 90.75%.',
+    description: 'Deteksi cacat kain tekstil berbasis AI terkalibrasi, berjalan 100% di browser.',
     type: 'website',
   },
 }

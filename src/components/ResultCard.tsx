@@ -5,183 +5,116 @@ import type { InferenceResult } from '@/lib/inference';
 
 interface ResultCardProps {
   result: InferenceResult;
+  onReset: () => void;
 }
 
-const DEFECT_ICONS: Record<string, string> = {
-  defect_free: '✅',
-  stain: '🟡',
-  hole: '⭕',
-  lines: '〰️',
-  horizontal: '↔️',
-  vertical: '↕️',
-};
+const STYLE = {
+  normal: {
+    box: 'bg-emerald-50 border-emerald-200',
+    badge: 'bg-emerald-600 text-white',
+    text: 'text-emerald-800',
+    bar: 'bg-emerald-500',
+    badgeText: 'KAIN NORMAL',
+  },
+  defect: {
+    box: 'bg-rose-50 border-rose-200',
+    badge: 'bg-rose-600 text-white',
+    text: 'text-rose-800',
+    bar: 'bg-rose-500',
+    badgeText: 'TERDETEKSI CACAT',
+  },
+  uncertain: {
+    box: 'bg-amber-50 border-amber-300',
+    badge: 'bg-amber-500 text-white',
+    text: 'text-amber-900',
+    bar: 'bg-amber-500',
+    badgeText: 'TIDAK PASTI',
+  },
+} as const;
 
-const DEFECT_DESCRIPTIONS: Record<string, string> = {
-  defect_free: 'Kain dalam kondisi baik, tidak terdeteksi cacat apapun.',
-  stain: 'Terdeteksi noda atau kontaminasi pada permukaan kain.',
-  hole: 'Terdeteksi lubang atau sobekan pada kain.',
-  lines: 'Terdeteksi garis atau guratan abnormal pada tekstur kain.',
-  horizontal: 'Terdeteksi cacat yang membentang secara horizontal pada kain.',
-  vertical: 'Terdeteksi cacat yang membentang secara vertikal pada kain.',
-};
+export default function ResultCard({ result, onReset }: ResultCardProps) {
+  const { decision, manifest } = result;
+  const s = STYLE[decision.verdict];
+  const label = (id: string) => manifest.labelsID[id] ?? id;
 
-function ConfidenceBar({
-  confidence,
-  isTop,
-  isSafe,
-}: {
-  confidence: number;
-  isTop?: boolean;
-  isSafe?: boolean;
-}) {
-  const pct = Math.round(confidence * 100);
-  const barColor = isSafe
-    ? 'linear-gradient(90deg, #10b981, #34d399)'
-    : isTop
-    ? 'linear-gradient(90deg, #ef4444, #f87171)'
-    : 'linear-gradient(90deg, #6366f1, #818cf8)';
-
-  return (
-    <div className="flex items-center gap-3">
-      <div className="confidence-bar-wrap flex-1">
-        <div
-          className="progress-bar h-full rounded-full"
-          style={{ width: `${pct}%`, background: barColor }}
-        />
-      </div>
-      <span
-        className="text-sm font-semibold tabular-nums"
-        style={{ minWidth: '3rem', color: isSafe ? '#34d399' : isTop ? '#f87171' : '#a5b4fc' }}
-      >
-        {pct}%
-      </span>
-    </div>
-  );
-}
-
-export default function ResultCard({ result }: ResultCardProps) {
-  const { topPrediction, allPredictions } = result;
-  const isDefectFree = topPrediction.isDefectFree;
-  const top3 = allPredictions.slice(0, 3);
-  const restPredictions = allPredictions.slice(1, 4); // positions 2,3,4
+  const headline =
+    decision.verdict === 'uncertain'
+      ? 'Perlu pemeriksaan manual'
+      : decision.verdict === 'normal'
+      ? 'Tidak ditemukan cacat'
+      : label(decision.topLabelId);
 
   return (
-    <div className="result-enter space-y-4">
-      {/* Main result card */}
-      <div
-        className="glass rounded-2xl p-6"
-        style={{
-          border: isDefectFree
-            ? '1px solid rgba(52, 211, 153, 0.3)'
-            : '1px solid rgba(248, 113, 113, 0.3)',
-          boxShadow: isDefectFree
-            ? '0 0 30px rgba(52, 211, 153, 0.08)'
-            : '0 0 30px rgba(239, 68, 68, 0.08)',
-        }}
-      >
-        {/* Header */}
-        <div className="flex items-start justify-between mb-5">
-          <div>
-            <p className="text-xs font-medium text-slate-400 uppercase tracking-widest mb-1">
-              Hasil Deteksi
+    <section className="space-y-4" aria-live="polite">
+      <div className={`rounded-2xl border p-5 shadow-sm ${s.box}`}>
+        <div className="flex items-center justify-between gap-3">
+          <span className={`text-[11px] font-bold tracking-wider px-2.5 py-1 rounded-full ${s.badge}`}>{s.badgeText}</span>
+          <span className="text-[11px] text-slate-500 font-mono">{result.elapsedMs} ms</span>
+        </div>
+
+        <h2 className={`mt-3 text-2xl font-extrabold tracking-tight ${s.text}`}>{headline}</h2>
+
+        {decision.verdict === 'uncertain' ? (
+          <div className="mt-2 space-y-2 text-sm text-slate-700">
+            <p>
+              Sistem <strong>tidak memberi kesimpulan otomatis</strong> karena hasilnya belum cukup dapat dipercaya:
             </p>
-            <div className="flex items-center gap-3">
-              <span className="text-3xl" role="img" aria-label={topPrediction.label}>
-                {DEFECT_ICONS[topPrediction.labelId] ?? '🔍'}
-              </span>
-              <h2 className="text-2xl font-bold text-white">
-                {topPrediction.label}
-              </h2>
-            </div>
+            <ul className="list-disc pl-5 space-y-1 text-xs text-slate-600">
+              {decision.reasons.map((r) => (
+                <li key={r}>{r}</li>
+              ))}
+            </ul>
+            <p className="text-xs text-slate-600">
+              Kandidat terdekat:{' '}
+              <strong>
+                {label(decision.ranked[0].labelId)} ({(decision.ranked[0].prob * 100).toFixed(1)}%)
+              </strong>{' '}
+              /{' '}
+              <strong>
+                {label(decision.ranked[1].labelId)} ({(decision.ranked[1].prob * 100).toFixed(1)}%)
+              </strong>
+              . Coba foto ulang dengan cahaya merata dan fokus tajam.
+            </p>
           </div>
-          <span
-            className={`px-3 py-1 rounded-full text-xs font-semibold ${isDefectFree ? 'badge-safe' : 'badge-defect'}`}
-          >
-            {isDefectFree ? 'AMAN' : 'CACAT'}
-          </span>
-        </div>
-
-        {/* Description */}
-        <p className="text-sm text-slate-400 mb-5 leading-relaxed">
-          {DEFECT_DESCRIPTIONS[topPrediction.labelId] ??
-            'Kelas terdeteksi pada gambar kain ini.'}
-        </p>
-
-        {/* Top confidence bar */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs text-slate-400 font-medium">
-              Tingkat Keyakinan
-            </span>
-          </div>
-          <ConfidenceBar
-            confidence={topPrediction.confidence}
-            isTop
-            isSafe={isDefectFree}
-          />
-        </div>
+        ) : (
+          <p className="mt-1 text-sm text-slate-600">
+            Keyakinan terkalibrasi <strong>{(decision.confidence * 100).toFixed(1)}%</strong> · selisih kelas kedua{' '}
+            <strong>{(decision.margin * 100).toFixed(1)}%</strong>
+          </p>
+        )}
       </div>
 
-      {/* Top-3 other predictions */}
-      <div className="glass rounded-2xl p-6">
-        <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-widest mb-4">
-          📊 Distribusi Semua Kelas
-        </h3>
-        <div className="space-y-4">
-          {allPredictions.map((pred, index) => (
-            <div key={pred.labelId} className="group">
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="flex items-center gap-2">
-                  {index === 0 && (
-                    <span
-                      className="w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold"
-                      style={{
-                        background: pred.isDefectFree
-                          ? 'rgba(52, 211, 153, 0.2)'
-                          : 'rgba(239, 68, 68, 0.2)',
-                        color: pred.isDefectFree ? '#34d399' : '#f87171',
-                      }}
-                    >
-                      1
-                    </span>
-                  )}
-                  {index > 0 && (
-                    <span className="w-5 h-5 rounded-full flex items-center justify-center text-xs text-slate-500"
-                          style={{ background: 'rgba(255,255,255,0.05)' }}>
-                      {index + 1}
-                    </span>
-                  )}
-                  <span className="text-sm">
-                    <span className="mr-1.5">
-                      {DEFECT_ICONS[pred.labelId] ?? '🔍'}
-                    </span>
-                    <span
-                      className={
-                        index === 0
-                          ? 'font-semibold text-white'
-                          : 'text-slate-400'
-                      }
-                    >
-                      {pred.label}
-                    </span>
-                  </span>
-                </div>
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide mb-3">Distribusi Probabilitas (terkalibrasi)</h3>
+        <ul className="space-y-2.5">
+          {decision.ranked.map((p, i) => (
+            <li key={p.labelId}>
+              <div className="flex justify-between text-xs mb-1">
+                <span className={i === 0 ? 'font-bold text-slate-900' : 'text-slate-600'}>{label(p.labelId)}</span>
+                <span className={`font-mono ${i === 0 ? 'font-bold text-slate-900' : 'text-slate-500'}`}>{(p.prob * 100).toFixed(1)}%</span>
               </div>
-              <ConfidenceBar
-                confidence={pred.confidence}
-                isTop={index === 0}
-                isSafe={pred.isDefectFree && index === 0}
-              />
-            </div>
+              <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${i === 0 ? s.bar : 'bg-slate-300'}`}
+                  style={{ width: `${Math.max(p.prob * 100, 0.5)}%` }}
+                />
+              </div>
+            </li>
           ))}
-        </div>
+        </ul>
+        <p className="mt-4 text-[11px] leading-relaxed text-slate-500">
+          Hasil ini adalah bantuan AI ({manifest.name}, akurasi uji {(manifest.metrics.testAccuracy * 100).toFixed(1)}%), bukan keputusan akhir
+          kontrol kualitas.
+        </p>
       </div>
 
-      {/* Disclaimer */}
-      <p className="text-center text-xs text-slate-600">
-        * Hasil ini merupakan prediksi model AI dan bukan diagnosa akhir.
-        Gunakan sebagai referensi pendukung.
-      </p>
-    </div>
+      <button
+        type="button"
+        onClick={onReset}
+        className="w-full py-2.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-sm font-semibold transition-colors"
+      >
+        Periksa Gambar Lain
+      </button>
+    </section>
   );
 }

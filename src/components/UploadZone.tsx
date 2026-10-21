@@ -18,7 +18,6 @@ export default function UploadZone({
   fileName,
 }: UploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
-  const [showGrid, setShowGrid] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = useCallback(
@@ -104,36 +103,8 @@ export default function UploadZone({
             className="w-full h-full object-contain"
           />
 
-          {/* Optical Grid Overlay */}
-          {showGrid && (
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                backgroundImage:
-                  'linear-gradient(to right, rgba(37, 99, 235, 0.25) 1px, transparent 1px), linear-gradient(to bottom, rgba(37, 99, 235, 0.25) 1px, transparent 1px)',
-                backgroundSize: '16.666% 16.666%',
-              }}
-            />
-          )}
-
           {/* Quick Floating Toolbar */}
           <div className="absolute top-3 right-3 flex items-center gap-1.5 opacity-90 group-hover:opacity-100 transition-opacity bg-white/90 backdrop-blur p-1 rounded-lg border border-slate-200 shadow-md">
-            <button
-              type="button"
-              onClick={() => setShowGrid(!showGrid)}
-              className={`p-1.5 rounded text-xs font-medium flex items-center gap-1 transition-colors ${
-                showGrid
-                  ? 'bg-blue-600 text-white shadow-sm'
-                  : 'text-slate-700 hover:bg-slate-100'
-              }`}
-              title="Aktifkan Grid Garis Bantu Inspeksi"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16M9 3v18M15 3v18" />
-              </svg>
-              <span className="text-[11px] hidden sm:inline">Grid 8×8</span>
-            </button>
-
             <button
               type="button"
               onClick={handleClick}
