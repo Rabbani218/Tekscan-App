@@ -21,7 +21,7 @@ export interface ModelManifest {
   outputType: 'softmax' | 'logits';
   classNames: string[];
   labelsID: Record<string, string>;
-  decision: { temperature: number; theta: number; delta: number; tta: string[] };
+  decision: { temperature: number; theta: number; delta: number; minDominantMargin?: number; tta: string[] };
   metrics: {
     testAccuracy: number;
     macroF1: number;

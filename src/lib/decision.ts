@@ -10,6 +10,7 @@ export interface DecisionConfig {
   temperature: number;
   theta: number;
   delta: number;
+  minDominantMargin?: number;
 }
 
 export interface ClassProb {
@@ -59,8 +60,25 @@ export function decide(
   const ranked = order.map((i) => ({ labelId: classNames[i], prob: probs[i] }));
 
   const reasons: string[] = [...qualityNotes.filter((n) => n.startsWith('!')).map((n) => n.slice(1))];
-  if (confidence < cfg.theta) reasons.push(`Keyakinan model rendah (${(confidence * 100).toFixed(1)}% < ${(cfg.theta * 100).toFixed(0)}%).`);
-  if (margin < cfg.delta) reasons.push(`Selisih dua kelas teratas tipis (${(margin * 100).toFixed(1)}% < ${(cfg.delta * 100).toFixed(0)}%).`);
+
+  // Dominant margin check:
+  // If the top class has a wide lead over the runner-up (e.g. margin >= 35%),
+  // the class is overwhelmingly dominant without close competition.
+  // Relax effective theta to 0.65 to avoid unnecessary manual checks on clear images.
+  const dominantThreshold = cfg.minDominantMargin ?? 0.35;
+  const isDominant = margin >= dominantThreshold;
+  const effectiveTheta = isDominant ? Math.min(cfg.theta, 0.65) : cfg.theta;
+
+  if (confidence < effectiveTheta) {
+    reasons.push(
+      `Keyakinan model rendah (${(confidence * 100).toFixed(1)}% < ${(effectiveTheta * 100).toFixed(0)}%).`
+    );
+  }
+  if (margin < cfg.delta) {
+    reasons.push(
+      `Selisih dua kelas teratas tipis (${(margin * 100).toFixed(1)}% < ${(cfg.delta * 100).toFixed(0)}%).`
+    );
+  }
 
   // TTA consistency: a flipped fabric is still the same fabric; the class must not change.
   const disagree = augmentedRaw.filter((p) => argmax(calibrate(p, cfg.temperature)) !== top).length;
@@ -72,3 +90,4 @@ export function decide(
 
   return { verdict, topLabelId: classNames[top], confidence, margin, ranked, reasons };
 }
+

@@ -18,16 +18,17 @@
   },
   "decision": {
     "temperature": 0.6083554208705685,
-    "theta": 0.85,
-    "delta": 0.25,
+    "theta": 0.70,
+    "delta": 0.20,
+    "minDominantMargin": 0.35,
     "tta": ["identity", "flipH", "flipV"]
   },
   "metrics": {
     "testAccuracy": 0.9349593495934959,
     "macroF1": 0.8927149655288109,
     "fprDefectFree": 0.02112676056338028,
-    "fprAutoAfterVerification": 0.008771929824561403,
-    "manualZonePct": 11.788617886178862,
+    "fprAutoAfterVerification": 0.015748031496062992,
+    "manualZonePct": 6.097560975609756,
     "ece": 0.018691957118089506
   },
   "quality": {
