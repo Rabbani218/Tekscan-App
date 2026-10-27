@@ -34,9 +34,9 @@ export default function ControlPanel({ isOpen, onClose, onModelModeChange }: Con
   const [diag, setDiag] = useState<SystemDiagnostics | null>(null);
   const [webTargets, setWebTargets] = useState<Record<string, WebStatusTarget>>({});
   const [modelMode, setModelMode] = useState<"real" | "demo">("real");
-  const [confThreshold, setConfThreshold] = useState<number>(0.08);
+  const [confThreshold, setConfThreshold] = useState<number>(0.20);
   const [iouThreshold, setIouThreshold] = useState<number>(0.45);
-  const [verifyThreshold, setVerifyThreshold] = useState<number>(0.08);
+  const [verifyThreshold, setVerifyThreshold] = useState<number>(0.15);
   const [copied, setCopied] = useState(false);
 
   const fetchStatus = useCallback(async () => {

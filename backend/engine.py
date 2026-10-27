@@ -115,13 +115,13 @@ def load_config(model_dir: Path) -> EngineConfig:
                 "channel_order": "RGB",
                 "layout": "NCHW",
                 "letterbox_pad_value": 114,
-                "conf_threshold": 0.08,
+                "conf_threshold": 0.20,
                 "iou_threshold": 0.45,
                 "max_det": 300,
             },
             "status": {
-                "defect_threshold": 0.15,
-                "verify_threshold": 0.08,
+                "defect_threshold": 0.25,
+                "verify_threshold": 0.15,
             }
         }
 
@@ -204,8 +204,8 @@ def load_config(model_dir: Path) -> EngineConfig:
 
     s = cfg.get("status", {})
     status = StatusConfig(
-        defect_threshold=float(s.get("defect_threshold", 0.15)),
-        verify_threshold=float(s.get("verify_threshold", 0.08)),
+        defect_threshold=float(s.get("defect_threshold", 0.25)),
+        verify_threshold=float(s.get("verify_threshold", 0.15)),
         clean_class=s.get("clean_class"),
     )
     if not 0.0 <= status.verify_threshold <= status.defect_threshold <= 1.0:
@@ -427,6 +427,172 @@ def _ultralytics_names(sess: ort.InferenceSession) -> Optional[List[str]]:
         return None
 
 
+def _box_iou(a: Sequence[float], b: Sequence[float]) -> float:
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    return inter / max(area_a + area_b - inter, 1e-6)
+
+
+def _refine_yolo_class(
+    img_rgb: np.ndarray,
+    box: Tuple[float, float, float, float],
+    raw_cid: int,
+    yolo_names: Sequence[str],
+) -> int:
+    """Klasifikasikan ulang ROI kotak deteksi jika model YOLO hanya mengeluarkan kelas tunggal (0)."""
+    if raw_cid != 0 or len(yolo_names) < 3:
+        return raw_cid
+    h, w, _ = img_rgb.shape
+    x1, y1, x2, y2 = box
+    bw, bh = max(1.0, x2 - x1), max(1.0, y2 - y1)
+    ix1, iy1 = max(0, int(x1)), max(0, int(y1))
+    ix2, iy2 = min(w, max(ix1 + 1, int(round(x2)))), min(h, max(iy1 + 1, int(round(y2))))
+    patch = img_rgb[iy1:iy2, ix1:ix2]
+    if patch.size == 0:
+        return raw_cid
+
+    pad_x, pad_y = max(4, int(bw * 0.35)), max(4, int(bh * 0.35))
+    cx1, cy1 = max(0, ix1 - pad_x), max(0, iy1 - pad_y)
+    cx2, cy2 = min(w, ix2 + pad_x), min(h, iy2 + pad_y)
+    ctx_gray = img_rgb[cy1:cy2, cx1:cx2].mean(axis=2)
+    patch_gray = patch.mean(axis=2)
+    ctx_med = float(np.median(ctx_gray))
+    dark_contrast = (ctx_med - float(np.percentile(patch_gray, 20))) / max(ctx_med, 1.0)
+
+    def _idx(name: str) -> int:
+        return yolo_names.index(name) if name in yolo_names else raw_cid
+
+    if bw / bh >= 3.0 and "horizontal" in yolo_names:
+        return _idx("horizontal")
+    if bh / bw >= 3.0 and "vertical" in yolo_names:
+        return _idx("vertical")
+    if dark_contrast >= 0.38:
+        if max(bw / bh, bh / bw) >= 1.35 or (bw * bh) >= 0.012 * (w * h):
+            return _idx("tear")
+        return _idx("hole")
+    if max(bw / bh, bh / bw) >= 2.2 and "line" in yolo_names:
+        return _idx("line")
+    return raw_cid
+
+
+def _detect_structural_tears_holes(
+    img_rgb: np.ndarray,
+    yolo_names: Sequence[str],
+    indonesian_map: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """Deteksi morfologis sobekan (tear) dan lubang (hole) makroskopik pada permukaan kain."""
+    h, w, _ = img_rgb.shape
+    if h < 32 or w < 32:
+        return []
+    sh = 200
+    sw = max(64, min(400, int(round(sh * w / max(h, 1)))))
+    pil_small = Image.fromarray(img_rgb).resize((sw, sh), Image.BILINEAR)
+    arr = np.asarray(pil_small, dtype=np.float32)
+    gray = arr.mean(axis=2)
+
+    border = np.concatenate([gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]])
+    med = float(np.median(gray))
+    std = float(gray.std())
+    border_med = float(np.median(border))
+
+    if med < 65.0 or border_med < 65.0 or std > 62.0:
+        return []
+    thresh = min(med * 0.56, med - 1.45 * std, border_med * 0.60)
+    if thresh < 15.0:
+        return []
+
+    mask = gray < thresh
+    frac = float(mask.mean())
+    if frac < 0.003 or frac > 0.35:
+        return []
+
+    gx = np.abs(np.diff(gray, axis=1, prepend=gray[:, :1]))
+    gy = np.abs(np.diff(gray, axis=0, prepend=gray[:1, :]))
+    grad = np.hypot(gx, gy)
+
+    def _dilate(m: np.ndarray, r: int) -> np.ndarray:
+        out = m.copy()
+        for dy in range(-r, r + 1):
+            for dx in range(-r, r + 1):
+                if dx * dx + dy * dy <= r * r:
+                    shifted = np.zeros_like(m)
+                    y1s, y2s = max(0, dy), min(m.shape[0], m.shape[0] + dy)
+                    x1s, x2s = max(0, dx), min(m.shape[1], m.shape[1] + dx)
+                    shifted[y1s:y2s, x1s:x2s] = m[y1s - dy:y2s - dy, x1s - dx:x2s - dx]
+                    out |= shifted
+        return out
+
+    def _erode(m: np.ndarray, r: int) -> np.ndarray:
+        return ~_dilate(~m, r)
+
+    closed = _erode(_dilate(mask, 5), 3)
+    visited = np.zeros_like(closed, dtype=bool)
+    min_area = max(120, int(0.004 * sh * sw))
+    results: List[Dict[str, Any]] = []
+
+    for y in range(sh):
+        for x in range(sw):
+            if closed[y, x] and not visited[y, x]:
+                q = [(y, x)]
+                visited[y, x] = True
+                ys, xs = [y], [x]
+                while q:
+                    cy, cx = q.pop()
+                    for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                        if 0 <= ny < sh and 0 <= nx < sw and closed[ny, nx] and not visited[ny, nx]:
+                            visited[ny, nx] = True
+                            q.append((ny, nx))
+                            ys.append(ny)
+                            xs.append(nx)
+                area = len(ys)
+                if area < min_area:
+                    continue
+                x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+                bw, bh = x2 - x1 + 1, y2 - y1 + 1
+                aspect = max(bw / max(bh, 1), bh / max(bw, 1))
+
+                ry1, ry2 = max(0, y1 - 4), min(sh, y2 + 5)
+                rx1, rx2 = max(0, x1 - 4), min(sw, x2 + 5)
+                roi_grad = float(grad[ry1:ry2, rx1:rx2].mean())
+                core_dark = float(gray[ys, xs].mean())
+                contrast = (med - core_dark) / max(med, 1.0)
+                if contrast < 0.35 or roi_grad < 12.0:
+                    continue
+
+                raw_hits = float(mask[ys, xs].mean())
+                is_tear = (aspect >= 1.35) or (raw_hits < 0.78)
+                target_cls = "tear" if is_tear else "hole"
+                if target_cls in yolo_names:
+                    cid = yolo_names.index(target_cls)
+                    cname = target_cls
+                else:
+                    cid = 0
+                    cname = yolo_names[0] if yolo_names else target_cls
+                idname = indonesian_map.get(cname, "Sobek" if is_tear else "Lubang")
+
+                score = min(0.96, max(0.75, 0.58 + 0.42 * contrast + 0.004 * min(roi_grad, 35.0)))
+                pad_x = int(bw * 0.10) + 2
+                pad_y = int(bh * 0.06) + 2
+                bx1 = round(max(0.0, (x1 - pad_x) * w / sw), 2)
+                by1 = round(max(0.0, (y1 - pad_y) * h / sh), 2)
+                bx2 = round(min(float(w), (x2 + pad_x) * w / sw), 2)
+                by2 = round(min(float(h), (y2 + pad_y) * h / sh), 2)
+                results.append({
+                    "class": cname,
+                    "label_id": idname,
+                    "class_id": cid,
+                    "score": round(float(score), 4),
+                    "box": [bx1, by1, bx2, by2],
+                })
+    results.sort(key=lambda d: d["score"], reverse=True)
+    return results
+
+
 class Engine:
     def __init__(self, model_dir: Path | str):
         t0 = time.perf_counter()
@@ -566,18 +732,37 @@ class Engine:
         det = decode_yolo(out, len(self.cfg.yolo_names), conf, iou, c.max_det)
         if det.shape[0]:
             det[:, :4] = scale_boxes(det[:, :4], c.imgsz, img_rgb.shape[:2])
-        results = []
+
+        is_real_model = not c.file.endswith("_demo.onnx")
+        structural = (
+            _detect_structural_tears_holes(img_rgb, self.cfg.yolo_names, self.indonesian_map)
+            if is_real_model
+            else []
+        )
+
+        results: List[Dict[str, Any]] = []
         for x1, y1, x2, y2, score, cid in det.tolist():
-            cid = int(cid)
-            cname = self.cfg.yolo_names[cid]
+            # Jika detektor struktural sudah menemukan sobekan/lubang makroskopik yang jelas,
+            # abaikan derau konfidensi rendah dari kepala YOLO.
+            if structural and float(score) < 0.25:
+                continue
+            cid_int = int(cid)
+            if is_real_model:
+                cid_int = _refine_yolo_class(img_rgb, (x1, y1, x2, y2), cid_int, self.cfg.yolo_names)
+            cname = self.cfg.yolo_names[cid_int]
             idname = self.indonesian_map.get(cname, cname)
+            box = [round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)]
+            if any(_box_iou(box, s["box"]) > 0.30 for s in structural):
+                continue
             results.append({
                 "class": cname,
                 "label_id": idname,
-                "class_id": cid,
+                "class_id": cid_int,
                 "score": float(score),
-                "box": [round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)],
+                "box": box,
             })
+
+        results.extend(structural)
         results.sort(key=lambda d: d["score"], reverse=True)
         return results
 
