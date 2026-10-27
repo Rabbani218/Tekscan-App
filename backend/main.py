@@ -23,8 +23,16 @@ from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, Bo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from engine import ConfigError, Engine, decode_image
-from self_healing import healer
+_BACKEND_DIR = Path(__file__).resolve().parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+
+try:
+    from backend.engine import ConfigError, Engine, decode_image
+    from backend.self_healing import healer
+except ImportError:
+    from engine import ConfigError, Engine, decode_image  # type: ignore[no-redef]
+    from self_healing import healer  # type: ignore[no-redef]
 
 log = logging.getLogger("tekscan")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")

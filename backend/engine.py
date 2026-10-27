@@ -19,7 +19,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import onnxruntime as ort
@@ -599,7 +599,7 @@ def _detect_structural_tears_holes(
 
 
 class Engine:
-    def __init__(self, model_dir: Path | str):
+    def __init__(self, model_dir: Union[Path, str]):
         t0 = time.perf_counter()
         self.model_dir = Path(model_dir)
         self.cfg = load_config(self.model_dir)

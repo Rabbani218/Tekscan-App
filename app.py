@@ -41,7 +41,7 @@ import webbrowser
 import urllib.request
 import urllib.error
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 ROOT_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = ROOT_DIR / "backend"
@@ -49,13 +49,23 @@ SCRIPTS_DIR = ROOT_DIR / "scripts"
 
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-from self_healing import (  # noqa: E402
-    SelfHealer,
-    DEFAULT_VERCEL_URL,
-    DEFAULT_HF_URL,
-    REQUIRED_PYTHON_PACKAGES,
-)
+try:
+    from backend.self_healing import (
+        SelfHealer,
+        DEFAULT_VERCEL_URL,
+        DEFAULT_HF_URL,
+        REQUIRED_PYTHON_PACKAGES,
+    )
+except ImportError:
+    from self_healing import (  # type: ignore[no-redef]
+        SelfHealer,
+        DEFAULT_VERCEL_URL,
+        DEFAULT_HF_URL,
+        REQUIRED_PYTHON_PACKAGES,
+    )
 
 
 # ============================================================================
@@ -237,7 +247,7 @@ class TekscanController:
 
     def _stream_command(
         self,
-        cmd: List[str] | str,
+        cmd: Union[List[str], str],
         cwd: Path = ROOT_DIR,
         tag: str = "CMD",
         shell: bool = False,
@@ -456,7 +466,7 @@ def run_gui_app():
             self.root.minsize(980, 640)
             self.root.configure(bg="#0b0f19")
 
-            self.log_queue: "queue.Queue[Tuple[str, str]]" = queue.Queue()
+            self.log_queue: queue.Queue = queue.Queue()
             self.all_logs: List[Tuple[str, str]] = []
             self.log_filter = tk.StringVar(value="ALL")
             self.vercel_url_var = tk.StringVar(value=DEFAULT_VERCEL_URL)

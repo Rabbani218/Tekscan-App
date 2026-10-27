@@ -22,10 +22,10 @@ import json
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
-def export_yolo(pt: Path, out_dir: Path, imgsz_arg: int | None) -> Dict[str, Any]:
+def export_yolo(pt: Path, out_dir: Path, imgsz_arg: Optional[int]) -> Dict[str, Any]:
     from ultralytics import YOLO
 
     model = YOLO(str(pt))
