@@ -19,7 +19,6 @@ import {
   type DemoCase,
 } from "@/lib/api";
 import styles from "./Scanner.module.css";
-import ControlPanel from "./ControlPanel";
 
 const MODEL_OPTIONS: { value: ModelChoice; label: string; hint: string; badge?: string }[] = [
   { value: "yolo", label: "YOLO11s", hint: "Deteksi lokasi & kotak cacat tekstil (6 kelas)", badge: "Deteksi Aktif" },
@@ -103,7 +102,6 @@ export default function Scanner() {
   const [dragOver, setDragOver] = useState(false);
   const [dbState, setDbState] = useState<"unknown" | "saved" | "disabled" | "error">("unknown");
   const [historyKey, setHistoryKey] = useState(0);
-  const [controlPanelOpen, setControlPanelOpen] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const lastFileRef = useRef<File | null>(null);
 
@@ -282,21 +280,7 @@ export default function Scanner() {
 
       <div className={styles.topBar}>
         <ServerBadge server={server} onRetry={checkServer} />
-        <button
-          id="open-control-panel"
-          type="button"
-          className={styles.controlPanelBtn}
-          onClick={() => setControlPanelOpen(true)}
-        >
-          ⚙️ Control Panel & Self-Healing
-        </button>
       </div>
-
-      <ControlPanel
-        isOpen={controlPanelOpen}
-        onClose={() => setControlPanelOpen(false)}
-        onModelModeChange={() => void checkServer()}
-      />
 
       {/* KONTROL KASUS UJI DEMO */}
       {isDemo && (

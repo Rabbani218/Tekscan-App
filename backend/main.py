@@ -266,32 +266,12 @@ def system_status() -> Dict[str, Any]:
 
 
 @app.get("/system/web-status")
-def web_status() -> Dict[str, Any]:
-    """Pemeriksaan status web publik dan lokal (Hugging Face Spaces, Vercel, Supabase)."""
-    targets = {
-        "local_backend": "http://127.0.0.1:7860/health",
-        "local_frontend": "http://127.0.0.1:3000",
-    }
-    # Periksa apakah ada target URL cloud di env
-    hf_url = os.environ.get("NEXT_PUBLIC_API_URL")
-    if hf_url and "localhost" not in hf_url and "127.0.0.1" not in hf_url:
-        targets["huggingface_space"] = f"{hf_url.rstrip('/')}/health"
-
-    results = {}
-    for name, url in targets.items():
-        t0 = time.time()
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "TEKSCAN-StatusCheck/1.0"})
-            with urllib.request.urlopen(req, timeout=3) as res:
-                latency = round((time.time() - t0) * 1000, 1)
-                results[name] = {"online": res.status == 200, "http_status": res.status, "latency_ms": latency, "url": url}
-        except urllib.error.HTTPError as err:
-            latency = round((time.time() - t0) * 1000, 1)
-            results[name] = {"online": False, "http_status": err.code, "latency_ms": latency, "url": url}
-        except Exception:
-            latency = round((time.time() - t0) * 1000, 1)
-            results[name] = {"online": False, "http_status": 0, "latency_ms": latency, "url": url}
-
+def web_status(
+    vercel_url: Optional[str] = Query(None),
+    hf_url: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    """Pemeriksaan status web publik dan lokal (Hugging Face Spaces, Vercel, Lokal)."""
+    results = healer.check_web_endpoints(vercel_url=vercel_url, hf_url=hf_url)
     return {"status": "ok", "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"), "web_status": results}
 
 

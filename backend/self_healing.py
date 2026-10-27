@@ -1,12 +1,14 @@
-"""Modul Self-Healing TEKSCAN.
+"""Modul Self-Healing & Portabilitas Lintas-Laptop TEKSCAN.
 
 Menyediakan diagnosis otomatis dan pemulihan mandiri untuk:
-1. Pemeriksaan & perbaikan dependensi Python (onnxruntime, fastapi, pillow, numpy, dll.)
-2. Pemeriksaan & pembebasan port (7860 dan 3000) dari proses zombie/beku
-3. Pembuatan otomatis model demo jika belum ada atau rusak
-4. Inisialisasi basis data SQLite lokal untuk riwayat pemindaian offline
-5. Pemantauan sumber daya sistem (CPU, RAM, Disk, Penyedia Eksekusi ONNX)
-6. Uji konektivitas web (Hugging Face Spaces, Vercel, Supabase)
+1. Pemeriksaan & perbaikan Virtualenv Python (mendeteksi venv rusak akibat pindah laptop)
+2. Pemeriksaan & instalasi otomatis library Python (onnxruntime, fastapi, pillow, numpy, psutil, dll.)
+3. Deteksi otomatis Node.js/npm lintas lokasi & perbaikan node_modules / lockfile Next.js
+4. Pemeriksaan & pembebasan port (7860 dan 3000) dari proses zombie/beku
+5. Sinkronisasi otomatis model AI asli (YOLO11s & ResNet50) & pembuatan model demo cadangan
+6. Inisialisasi basis data SQLite lokal untuk riwayat pemindaian offline
+7. Pemantauan sumber daya sistem (CPU, RAM, Disk, Penyedia Eksekusi ONNX)
+8. Uji konektivitas web (Vercel, Hugging Face Spaces, Backend Lokal, Frontend Lokal)
 """
 
 from __future__ import annotations
@@ -20,19 +22,41 @@ import shutil
 import sqlite3
 import platform
 import subprocess
+import urllib.request
+import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     import psutil
 except ImportError:
     psutil = None
 
+DEFAULT_VERCEL_URL = os.environ.get(
+    "TEKSCAN_VERCEL_URL",
+    "https://tekscanapplicationwebsite-g2s3vj4u6.vercel.app",
+)
+DEFAULT_HF_URL = os.environ.get(
+    "TEKSCAN_HF_URL",
+    "https://huggingface.co/spaces",
+)
+
+REQUIRED_PYTHON_PACKAGES: Dict[str, str] = {
+    "fastapi": "fastapi>=0.115.0",
+    "uvicorn": "uvicorn[standard]>=0.30.0",
+    "onnxruntime": "onnxruntime>=1.19.0",
+    "numpy": "numpy>=1.26.0",
+    "PIL": "pillow>=10.4.0",
+    "multipart": "python-multipart>=0.0.9",
+    "httpx": "httpx>=0.27.0",
+    "psutil": "psutil>=5.9.0",
+}
+
 
 class SelfHealer:
     def __init__(self, project_root: Optional[Path] = None):
         if project_root is None:
-            # Cari root tekscan
             current = Path(__file__).resolve().parent
             if (current / "package.json").exists():
                 self.root = current
@@ -56,7 +80,7 @@ class SelfHealer:
     def is_port_in_use(self, port: int, host: str = "127.0.0.1") -> bool:
         """Periksa apakah port tertentu sedang digunakan."""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.5)
+            s.settimeout(0.4)
             return s.connect_ex((host, port)) == 0
 
     def find_free_port(self, preferred_port: int, max_tries: int = 10) -> int:
@@ -73,93 +97,251 @@ class SelfHealer:
         if not self.is_port_in_use(port):
             return True, f"Port {port} sudah bebas."
 
-        killed_pids = []
+        killed_pids: List[int] = []
+        my_pid = os.getpid()
+
         if psutil:
-            for proc in psutil.process_iter(['pid', 'name']):
+            for proc in psutil.process_iter(["pid", "name"]):
                 try:
-                    for conn in proc.connections(kind='inet'):
+                    for conn in proc.connections(kind="inet"):
                         if conn.laddr.port == port:
-                            pid = proc.info['pid']
-                            if pid != os.getpid():
+                            pid = proc.info["pid"]
+                            if pid and pid != my_pid:
                                 proc.terminate()
                                 killed_pids.append(pid)
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                except Exception:
                     pass
-        else:
-            # Fallback Windows netstat + taskkill
-            if platform.system() == "Windows":
-                try:
-                    out = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True).stdout
-                    for line in out.splitlines():
-                        if f":{port} " in line and "LISTENING" in line:
-                            pid = line.strip().split()[-1]
-                            if pid.isdigit() and int(pid) != os.getpid():
-                                subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
-                                killed_pids.append(int(pid))
-                except Exception as exc:
-                    return False, f"Gagal membebaskan port {port}: {exc}"
 
-        time.sleep(1.0)
-        if not self.is_port_in_use(port):
-            return True, f"Port {port} berhasil dibebaskan (dihentikan PID: {killed_pids})."
-        return False, f"Port {port} masih terkunci setelah dicoba dibebaskan."
-
-    # ==========================================
-    # 2. AUTO-HEAL DEPENDENSI PYTHON
-    # ==========================================
-    def check_python_dependencies(self) -> Dict[str, bool]:
-        """Periksa apakah pustaka utama backend tersedia."""
-        packages = ["fastapi", "uvicorn", "onnxruntime", "numpy", "PIL", "httpx"]
-        status = {}
-        for pkg in packages:
+        if platform.system() == "Windows":
             try:
-                __import__(pkg)
-                status[pkg] = True
-            except ImportError:
-                status[pkg] = False
-        return status
+                out = subprocess.run(
+                    ["netstat", "-ano", "-p", "tcp"],
+                    capture_output=True,
+                    text=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                ).stdout
+                for line in out.splitlines():
+                    if f":{port} " in line and "LISTENING" in line:
+                        pid_str = line.strip().split()[-1]
+                        if pid_str.isdigit():
+                            pid = int(pid_str)
+                            if pid != my_pid and pid not in killed_pids:
+                                subprocess.run(
+                                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                                    capture_output=True,
+                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                                )
+                                killed_pids.append(pid)
+            except Exception as exc:
+                return False, f"Gagal membebaskan port {port}: {exc}"
+        else:
+            try:
+                subprocess.run(f"lsof -ti:{port} | xargs kill -9", shell=True, capture_output=True)
+            except Exception:
+                pass
 
-    def heal_python_dependencies(self) -> Tuple[bool, str]:
-        """Pasang dependensi yang kurang secara otomatis."""
-        dep_status = self.check_python_dependencies()
-        missing = [pkg for pkg, ok in dep_status.items() if not ok]
-        if not missing:
-            return True, "Semua dependensi Python lengkap."
+        time.sleep(0.8)
+        if not self.is_port_in_use(port):
+            return True, f"Port {port} berhasil dibebaskan (PID dihentikan: {killed_pids})."
+        return False, f"Port {port} masih digunakan oleh layanan aktif."
+
+    # ==========================================
+    # 2. AUTO-HEAL PYTHON & VIRTUALENV LINTAS LAPTOP
+    # ==========================================
+    def is_python_exe_valid(self, py_exe: Path) -> bool:
+        """Periksa apakah executable Python valid dan bukan venv rusak dari laptop lain."""
+        if not py_exe.exists():
+            return False
+        try:
+            res = subprocess.run(
+                [str(py_exe), "-c", "import sys; print(sys.version_info[0])"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return res.returncode == 0 and "3" in res.stdout
+        except Exception:
+            return False
+
+    def check_python_dependencies(self, py_exe: Optional[str] = None) -> Dict[str, bool]:
+        """Periksa apakah pustaka utama backend tersedia."""
+        target_py = py_exe or sys.executable
+        status: Dict[str, bool] = {}
+        if Path(target_py).resolve() == Path(sys.executable).resolve():
+            for mod_name in REQUIRED_PYTHON_PACKAGES:
+                try:
+                    __import__(mod_name)
+                    status[mod_name] = True
+                except ImportError:
+                    status[mod_name] = False
+            return status
+
+        check_code = (
+            "import json\n"
+            f"mods = {list(REQUIRED_PYTHON_PACKAGES.keys())!r}\n"
+            "out = {}\n"
+            "for m in mods:\n"
+            "    try:\n"
+            "        __import__(m)\n"
+            "        out[m] = True\n"
+            "    except Exception:\n"
+            "        out[m] = False\n"
+            "print(json.dumps(out))\n"
+        )
+        try:
+            res = subprocess.run(
+                [target_py, "-c", check_code],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if res.returncode == 0:
+                return json.loads(res.stdout.strip().splitlines()[-1])
+        except Exception:
+            pass
+        return {k: False for k in REQUIRED_PYTHON_PACKAGES}
+
+    def heal_python_dependencies(
+        self,
+        py_exe: Optional[str] = None,
+        on_log: Optional[Callable[[str], None]] = None,
+    ) -> Tuple[bool, str]:
+        """Pasang dependensi Python yang kurang secara otomatis."""
+        target_py = py_exe or sys.executable
+        dep_status = self.check_python_dependencies(target_py)
+        missing_mods = [mod for mod, ok in dep_status.items() if not ok]
+        if not missing_mods:
+            return True, "Semua library Python lengkap."
+
+        missing_specs = [REQUIRED_PYTHON_PACKAGES[m] for m in missing_mods]
+        if on_log:
+            on_log(f"[SELF-HEAL] Memasang library Python yang kurang: {', '.join(missing_mods)}...")
 
         req_file = self.backend_dir / "requirements.txt"
-        if not req_file.exists():
-            return False, f"Berkas {req_file} tidak ditemukan."
+        cmd = [target_py, "-m", "pip", "install", "--disable-pip-version-check"]
+        if req_file.exists():
+            cmd.extend(["-r", str(req_file)])
+        cmd.extend(missing_specs)
 
-        cmd = [sys.executable, "-m", "pip", "install", "-r", str(req_file)]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=240,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if res.returncode != 0:
+                # Fallback --user jika permission ditolak di laptop lain
+                cmd_user = [target_py, "-m", "pip", "install", "--user", "--disable-pip-version-check"] + missing_specs
+                res = subprocess.run(
+                    cmd_user,
+                    capture_output=True,
+                    text=True,
+                    timeout=240,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
             if res.returncode == 0:
-                return True, f"Dependensi Python berhasil dipasang ({', '.join(missing)})."
-            return False, f"Gagal memasang dependensi: {res.stderr}"
+                return True, f"Library Python berhasil dipasang ({', '.join(missing_mods)})."
+            return False, f"Gagal memasang library Python: {res.stderr[-300:]}"
         except Exception as exc:
             return False, f"Error saat pip install: {exc}"
 
     # ==========================================
-    # 3. AUTO-HEAL MODEL DEMO
+    # 3. DETEKSI & HEAL NODE.JS / FRONTEND LINTAS LAPTOP
     # ==========================================
+    def find_node_npm(self) -> Tuple[Optional[str], Optional[str]]:
+        """Cari lokasi node dan npm meskipun belum masuk PATH standar."""
+        node_bin = shutil.which("node")
+        npm_bin = shutil.which("npm")
+        if node_bin and npm_bin:
+            return node_bin, npm_bin
+
+        candidates: List[Path] = []
+        if platform.system() == "Windows":
+            prog = os.environ.get("ProgramFiles", r"C:\Program Files")
+            prog86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+            appdata = os.environ.get("APPDATA", "")
+            localapp = os.environ.get("LOCALAPPDATA", "")
+            candidates.extend([
+                Path(prog) / "nodejs",
+                Path(prog86) / "nodejs",
+                Path(appdata) / "nvm",
+                Path(localapp) / "Programs" / "nodejs",
+            ])
+        else:
+            candidates.extend([
+                Path("/usr/local/bin"),
+                Path("/opt/homebrew/bin"),
+                Path.home() / ".nvm" / "current" / "bin",
+            ])
+
+        for folder in candidates:
+            if not folder.exists():
+                continue
+            n_exe = folder / ("node.exe" if platform.system() == "Windows" else "node")
+            npm_exe = folder / ("npm.cmd" if platform.system() == "Windows" else "npm")
+            if n_exe.exists() and npm_exe.exists():
+                os.environ["PATH"] = f"{folder}{os.pathsep}{os.environ.get('PATH', '')}"
+                return str(n_exe), str(npm_exe)
+
+        return node_bin, npm_bin
+
+    def heal_nextjs_locks(self) -> Tuple[bool, str]:
+        """Bersihkan berkas .next/dev/lock yang sering mengunci Next.js saat pindah laptop/crash."""
+        lock_file = self.root / ".next" / "dev" / "lock"
+        cleaned = []
+        if lock_file.exists():
+            try:
+                lock_file.unlink()
+                cleaned.append(".next/dev/lock")
+            except Exception:
+                pass
+        if cleaned:
+            return True, f"Lockfile dibersihkan ({', '.join(cleaned)})."
+        return True, "Tidak ada lockfile Next.js yang menyangkut."
+
+    # ==========================================
+    # 4. AUTO-HEAL & SINKRONISASI MODEL AI
+    # ==========================================
+    def sync_real_models(self) -> List[str]:
+        """Sinkronkan model asli dari Model/ atau ../model_dan_aplikasi ke backend/models/."""
+        self.models_dir.mkdir(parents=True, exist_ok=True)
+        alt_dirs = [
+            self.root / "Model",
+            self.root.parent / "model_dan_aplikasi",
+        ]
+        synced: List[str] = []
+        files = ["tekscan_yolo.onnx", "resnet50.onnx", "class_names.json", "preprocessing_config.json"]
+        for fname in files:
+            target = self.models_dir / fname
+            if not target.exists() or target.stat().st_size < 50:
+                for src_dir in alt_dirs:
+                    cand = src_dir / fname
+                    if cand.exists() and cand.stat().st_size >= 50:
+                        shutil.copy2(cand, target)
+                        synced.append(fname)
+                        break
+        return synced
+
     def check_models(self, mode: str = "demo") -> Tuple[bool, List[str]]:
         """Periksa apakah model yang dibutuhkan tersedia."""
-        req_files = ["tekscan_yolo.onnx", "resnet50.onnx", "class_names.json", "preprocessing_config.json"]
         if mode == "demo":
             target_dir = self.models_demo_dir
             demo_req = ["tekscan_yolo_demo.onnx", "resnet50_demo.onnx", "class_names.json", "preprocessing_config.json"]
             missing = [f for f in demo_req if not (target_dir / f).exists()]
             return len(missing) == 0, missing
         else:
-            target_dir = self.models_dir
-            alt_dir = self.root.parent / "model_dan_aplikasi"
-            req_files = ["tekscan_yolo.onnx", "class_names.json", "preprocessing_config.json"]
-            missing = [f for f in req_files if not (target_dir / f).exists() and not (alt_dir / f).exists()]
+            self.sync_real_models()
+            req_files = ["tekscan_yolo.onnx", "resnet50.onnx", "class_names.json", "preprocessing_config.json"]
+            missing = [f for f in req_files if not (self.models_dir / f).exists()]
             return len(missing) == 0, missing
 
     def heal_demo_models(self) -> Tuple[bool, str]:
         """Buat model demo otomatis jika belum ada."""
-        ok, missing = self.check_models("demo")
+        ok, _ = self.check_models("demo")
         if ok:
             return True, "Model demo lengkap dan siap."
 
@@ -169,7 +351,13 @@ class SelfHealer:
 
         cmd = [sys.executable, str(script)]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
             if res.returncode == 0:
                 return True, "Model demo berhasil digenerate otomatis."
             return False, f"Gagal membuat model demo: {res.stderr}"
@@ -177,7 +365,7 @@ class SelfHealer:
             return False, f"Error eksekusi make_demo_models.py: {exc}"
 
     # ==========================================
-    # 4. BASIS DATA SQLITE LOKAL (FALLBACK OFFLINE)
+    # 5. BASIS DATA SQLITE LOKAL (FALLBACK OFFLINE)
     # ==========================================
     def init_local_sqlite(self) -> Tuple[bool, str]:
         """Inisialisasi tabel riwayat pemindaian lokal SQLite."""
@@ -267,21 +455,92 @@ class SelfHealer:
             return []
 
     # ==========================================
-    # 5. DIAGNOSIS LENGKAP SISTEM
+    # 6. PEMERIKSAAN STATUS WEB (VERCEL, HUGGING FACE, LOKAL)
+    # ==========================================
+    def check_web_endpoints(
+        self,
+        vercel_url: Optional[str] = None,
+        hf_url: Optional[str] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Uji konektivitas ke Vercel, Hugging Face Spaces, Backend Lokal, dan Frontend Lokal secara paralel."""
+        v_url = (vercel_url or DEFAULT_VERCEL_URL).strip()
+        h_url = (hf_url or os.environ.get("NEXT_PUBLIC_API_URL") or DEFAULT_HF_URL).strip()
+        if "localhost" in h_url or "127.0.0.1" in h_url:
+            h_url = DEFAULT_HF_URL
+
+        targets: Dict[str, Tuple[str, float]] = {
+            "local_backend": ("http://127.0.0.1:7860/health", 1.2),
+            "local_frontend": ("http://127.0.0.1:3000", 1.2),
+            "vercel_web": (v_url, 6.5),
+            "huggingface": (h_url, 6.5),
+        }
+
+        def _probe(item: Tuple[str, Tuple[str, float]]) -> Tuple[str, Dict[str, Any]]:
+            name, (url, timeout_sec) = item
+            if not url:
+                return name, {"online": False, "http_status": 0, "latency_ms": 0.0, "url": ""}
+            # Fast socket pre-check untuk endpoint lokal agar tidak menunggu timeout panjang di Windows
+            if name in ("local_backend", "local_frontend"):
+                port = 7860 if name == "local_backend" else 3000
+                if not self.is_port_in_use(port):
+                    return name, {"online": False, "http_status": 0, "latency_ms": 0.0, "url": url}
+
+            t0 = time.time()
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "TEKSCAN-DesktopControlPanel/2.5"},
+                )
+                with urllib.request.urlopen(req, timeout=timeout_sec) as res:
+                    latency = round((time.time() - t0) * 1000, 1)
+                    return name, {
+                        "online": 200 <= res.status < 400,
+                        "http_status": res.status,
+                        "latency_ms": latency,
+                        "url": url,
+                    }
+            except urllib.error.HTTPError as err:
+                latency = round((time.time() - t0) * 1000, 1)
+                is_reachable = err.code in (200, 301, 302, 307, 308, 401, 403)
+                return name, {
+                    "online": is_reachable,
+                    "http_status": err.code,
+                    "latency_ms": latency,
+                    "url": url,
+                }
+            except Exception as exc:
+                latency = round((time.time() - t0) * 1000, 1)
+                return name, {
+                    "online": False,
+                    "http_status": 0,
+                    "latency_ms": latency,
+                    "url": url,
+                    "error": str(exc),
+                }
+
+        results: Dict[str, Dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for name, data in pool.map(_probe, targets.items()):
+                results[name] = data
+        return results
+
+    # ==========================================
+    # 7. DIAGNOSIS LENGKAP SISTEM
     # ==========================================
     def get_system_diagnostics(self) -> Dict[str, Any]:
         """Himpun diagnosis kesehatan seluruh sistem."""
-        # Info OS & Hardware
         cpu_usage = 0.0
         ram_usage = 0.0
         ram_total_gb = 0.0
         if psutil:
-            cpu_usage = psutil.cpu_percent(interval=None)
-            mem = psutil.virtual_memory()
-            ram_usage = mem.percent
-            ram_total_gb = round(mem.total / (1024**3), 1)
+            try:
+                cpu_usage = psutil.cpu_percent(interval=None)
+                mem = psutil.virtual_memory()
+                ram_usage = mem.percent
+                ram_total_gb = round(mem.total / (1024**3), 1)
+            except Exception:
+                pass
 
-        # Info ONNX Provider
         onnx_providers = []
         try:
             import onnxruntime as ort
@@ -289,18 +548,13 @@ class SelfHealer:
         except Exception:
             pass
 
-        # Periksa Port
         port_be_ok = not self.is_port_in_use(7860)
         port_fe_ok = not self.is_port_in_use(3000)
 
-        # Periksa Model
         has_real_models, missing_real = self.check_models("real")
         has_demo_models, missing_demo = self.check_models("demo")
-
-        # Periksa Python Deps
         py_deps = self.check_python_dependencies()
-
-        # Periksa SQLite
+        node_bin, npm_bin = self.find_node_npm()
         sqlite_ok = self.sqlite_db.exists()
 
         overall_health = "healthy"
@@ -311,6 +565,9 @@ class SelfHealer:
         if not has_real_models and not has_demo_models:
             overall_health = "critical"
             issues.append("Tidak ada model real maupun demo yang tersedia.")
+        if not node_bin or not npm_bin:
+            overall_health = "warning"
+            issues.append("Node.js/npm belum terdeteksi di sistem ini.")
 
         return {
             "status": overall_health,
@@ -341,6 +598,11 @@ class SelfHealer:
                 "missing_demo": missing_demo,
             },
             "python_dependencies": py_deps,
+            "node": {
+                "node_path": node_bin,
+                "npm_path": npm_bin,
+                "node_modules_ready": (self.root / "node_modules" / "next").exists(),
+            },
             "database": {
                 "sqlite_local": sqlite_ok,
                 "sqlite_path": str(self.sqlite_db),
@@ -349,34 +611,37 @@ class SelfHealer:
         }
 
     # ==========================================
-    # 6. SIKLUS SELF-HEALING LENGKAP
+    # 8. SIKLUS SELF-HEALING LENGKAP
     # ==========================================
     def run_full_self_heal(self) -> Dict[str, Any]:
         """Jalankan seluruh siklus perbaikan mandiri."""
         logs = []
 
-        # 1. Pastikan .env.local ada
         env_local = self.root / ".env.local"
         env_example = self.root / ".env.example"
-        if not env_local.exists() and env_example.exists():
-            shutil.copy2(env_example, env_local)
-            logs.append("Dibuat .env.local dari .env.example dengan konfigurasi standar.")
+        if not env_local.exists():
+            if env_example.exists():
+                shutil.copy2(env_example, env_local)
+                logs.append("Dibuat .env.local dari .env.example.")
+            else:
+                env_local.write_text("NEXT_PUBLIC_API_URL=http://localhost:7860\n", encoding="utf-8")
+                logs.append("Dibuat .env.local standar.")
 
-        # 2. Pasang dependensi jika kurang
+        synced = self.sync_real_models()
+        if synced:
+            logs.append(f"Sinkronisasi model asli: {', '.join(synced)}")
+
         dep_ok, dep_msg = self.heal_python_dependencies()
         logs.append(f"Dependensi Python: {dep_msg}")
 
-        # 3. Model demo
         demo_ok, demo_msg = self.heal_demo_models()
         logs.append(f"Model Demo: {demo_msg}")
 
-        # 4. Inisialisasi basis data lokal
         db_ok, db_msg = self.init_local_sqlite()
         logs.append(f"Basis Data Lokal: {db_msg}")
 
-        # 5. Bebaskan port 7860 jika terkunci
-        port_be_free, port_be_msg = self.heal_port(7860)
-        logs.append(f"Pemeriksaan Port 7860: {port_be_msg}")
+        _, lock_msg = self.heal_nextjs_locks()
+        logs.append(f"Next.js Lock: {lock_msg}")
 
         diag = self.get_system_diagnostics()
         return {
