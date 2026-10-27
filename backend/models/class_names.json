@@ -1,0 +1,27 @@
+{
+  "yolo": [
+    "stain",
+    "hole",
+    "tear",
+    "line",
+    "horizontal",
+    "vertical"
+  ],
+  "classes": [
+    "stain",
+    "hole",
+    "tear",
+    "line",
+    "horizontal",
+    "vertical"
+  ],
+  "indonesian": [
+    "Noda",
+    "Lubang",
+    "Sobek",
+    "Garis",
+    "Garis Horizontal",
+    "Garis Vertikal"
+  ]
+}
+

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+requirements-dev.txt
+
+# Model demo dilarang masuk ke image Docker Hugging Face
+models_demo/
+models/*_demo.onnx
+case_*

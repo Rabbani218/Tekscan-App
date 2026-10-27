@@ -1,1 +1,0 @@
-{"arch_name": "ResNet50", "best_variant": "C", "resize_method": "cv2.INTER_AREA", "target_size": [224, 224], "used_synthetic_augmentation": false}

@@ -1,0 +1,55 @@
+name: Deploy Backend to Hugging Face Spaces
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-backend.yml'
+
+jobs:
+  deploy-to-space:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Production Safeguard Check
+        run: |
+          python scripts/check_deploy_safety.py backend
+
+      - name: Install Hugging Face Hub CLI & Git LFS
+        run: |
+          git lfs install
+          pip install huggingface_hub
+
+      - name: Sync Backend Directory to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE" ]; then
+            echo "::error::HF_TOKEN secret atau HF_SPACE repository variable belum diset!"
+            exit 1
+          fi
+
+          echo "Mengunggah konten backend/ ke Hugging Face Space: $HF_SPACE ..."
+          python -c "
+          from huggingface_hub import HfApi
+          api = HfApi(token='$HF_TOKEN')
+          api.upload_folder(
+              folder_path='backend',
+              repo_id='$HF_SPACE',
+              repo_type='space',
+              commit_message='Deploy backend from GitHub Actions'
+          )
+          "
+          echo "Sinkronisasi ke Hugging Face Space selesai."

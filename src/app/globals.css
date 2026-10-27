@@ -1,103 +1,34 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
 :root {
-  --bg-primary: #f8fafc;
+  --bg-main: #f8fafc;
   --bg-card: #ffffff;
-  --border-subtle: #e2e8f0;
-  --border-medium: #cbd5e1;
-  --color-primary: #2563eb;
-  --color-primary-dark: #1d4ed8;
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-muted: #94a3b8;
+  --border-color: #e2e8f0;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --primary: #2563eb;
+  --primary-glow: rgba(37, 99, 235, 0.2);
 }
 
 * {
   box-sizing: border-box;
+  padding: 0;
+  margin: 0;
 }
 
-html {
-  scroll-behavior: smooth;
-}
-
-body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
+html, body {
+  max-width: 100vw;
   min-height: 100vh;
-  overflow-x: hidden;
+  background-color: var(--bg-main);
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(37, 99, 235, 0.08) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(124, 58, 237, 0.06) 0px, transparent 50%);
+  background-attachment: fixed;
+  color: var(--text-main);
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Subtle modern blue light ambient background */
-.light-ambient-bg {
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(circle at 10% 10%, rgba(37, 99, 235, 0.05) 0%, transparent 40%),
-    radial-gradient(circle at 90% 20%, rgba(14, 165, 233, 0.04) 0%, transparent 45%),
-    radial-gradient(circle at 50% 90%, rgba(99, 102, 241, 0.03) 0%, transparent 50%),
-    #f8fafc;
-}
-
-/* Clean Card Surface */
-.card-surface {
-  background-color: #ffffff;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
-}
-
-.card-elevated {
-  background-color: #ffffff;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 10px 15px -3px rgba(15, 23, 42, 0.05), 0 4px 6px -4px rgba(15, 23, 42, 0.05);
-}
-
-/* Drop Zone Light */
-.drop-zone-light {
-  transition: all 0.2s ease-in-out;
-  border: 2px dashed #93c5fd;
-  background-color: #eff6ff;
-}
-
-.drop-zone-light:hover,
-.drop-zone-light.drag-over {
-  border-color: #2563eb;
-  background-color: #dbeafe;
-  transform: translateY(-1px);
-}
-
-/* Print Optimization for QC Certificate */
-@media print {
-  body {
-    background: #ffffff !important;
-    color: #000000 !important;
-  }
-
-  .print\\:hidden,
-  header,
-  footer,
-  nav,
-  button {
-    display: none !important;
-  }
-
-  .print\\:block {
-    display: block !important;
-  }
-
-  .print-page-break {
-    page-break-after: always;
-  }
-
-  .card-surface,
-  .card-elevated {
-    border: 1px solid #cbd5e1 !important;
-    box-shadow: none !important;
-  }
+a {
+  color: inherit;
+  text-decoration: none;
 }

@@ -1,56 +1,26 @@
-import type { Metadata } from 'next'
-import './globals.css'
+import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import "./globals.css";
+
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
 
 export const metadata: Metadata = {
-  title: 'TEKSCAN — Deteksi Cacat Kain Tekstil',
-  description:
-    'Deteksi cacat kain tekstil berbasis AI (ResNet50 terkalibrasi) langsung di browser: noda, lubang, garis, cacat horizontal dan vertikal, dengan zona verifikasi manual untuk mencegah false positive.',
-  keywords: [
-    'deteksi cacat kain',
-    'fabric defect detection',
-    'AI tekstil',
-    'ResNet50',
-    'TensorFlow.js',
-    'TEKSCAN',
-  ],
-  openGraph: {
-    title: 'TEKSCAN — Deteksi Cacat Kain Tekstil',
-    description: 'Deteksi cacat kain tekstil berbasis AI terkalibrasi, berjalan 100% di browser.',
-    type: 'website',
-  },
-}
+  title: "TEKSCAN - Sistem Deteksi Cacat Kain Tekstil",
+  description: "Aplikasi deteksi dan klasifikasi cacat kain tekstil berbasis model AI YOLO11 dan ResNet50.",
+};
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
+export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="id">
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link
-          rel="preconnect"
-          href="https://fonts.gstatic.com"
-          crossOrigin="anonymous"
-        />
-      </head>
-      <body>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
-                navigator.serviceWorker.getRegistrations().then(function(registrations) {
-                  for (var registration of registrations) {
-                    registration.unregister();
-                  }
-                });
-              }
-            `,
-          }}
-        />
-        {children}
-      </body>
+    <html lang="id" className={`${geistSans.variable} ${geistMono.variable}`} suppressHydrationWarning>
+      <body suppressHydrationWarning>{children}</body>
     </html>
-  )
+  );
 }
