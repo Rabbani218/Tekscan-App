@@ -23,6 +23,7 @@ export interface Detection {
 
 export interface Classification {
   top1: string;
+  top1_label_id?: string;
   top1_id: number;
   top1_score: number;
   probs: Record<string, number>;
@@ -75,8 +76,8 @@ export class ApiError extends Error {
 
 export const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
 export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
-const MAX_SIDE = 1280;
-const JPEG_QUALITY = 0.9;
+const MAX_SIDE = 800;
+const JPEG_QUALITY = 0.85;
 const RETRIES = 3;
 const RETRY_DELAY_MS = 5000;
 

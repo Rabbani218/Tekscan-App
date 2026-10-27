@@ -32,9 +32,34 @@
     "iou_threshold": 0.45,
     "max_det": 300
   },
+  "resnet50": {
+    "file": "resnet50.onnx",
+    "input_size": [
+      224,
+      224
+    ],
+    "channel_order": "RGB",
+    "layout": "NCHW",
+    "resize": {
+      "mode": "resize_shorter_center_crop",
+      "shorter": 256
+    },
+    "interpolation": "bilinear",
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ],
+    "output": "logits"
+  },
   "status": {
     "defect_threshold": 0.25,
-    "verify_threshold": 0.15
+    "verify_threshold": 0.15,
+    "clean_class": "defect_free"
   }
 }
-

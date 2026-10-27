@@ -7,6 +7,15 @@
     "horizontal",
     "vertical"
   ],
+  "resnet50": [
+    "defect_free",
+    "stain",
+    "hole",
+    "tear",
+    "line",
+    "horizontal",
+    "vertical"
+  ],
   "classes": [
     "stain",
     "hole",
@@ -22,6 +31,14 @@
     "Garis",
     "Garis Horizontal",
     "Garis Vertikal"
-  ]
+  ],
+  "indonesian_map": {
+    "defect_free": "Bebas Cacat",
+    "stain": "Noda",
+    "hole": "Lubang",
+    "tear": "Sobek",
+    "line": "Garis",
+    "horizontal": "Garis Horizontal",
+    "vertical": "Garis Vertikal"
+  }
 }
-

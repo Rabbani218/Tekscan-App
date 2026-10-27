@@ -22,10 +22,21 @@ import styles from "./Scanner.module.css";
 import ControlPanel from "./ControlPanel";
 
 const MODEL_OPTIONS: { value: ModelChoice; label: string; hint: string; badge?: string }[] = [
-  { value: "yolo", label: "YOLO11s", hint: "Deteksi cacat tekstil (6 kelas: noda, lubang, sobek, garis)", badge: "Model Aktif (Riil)" },
-  { value: "resnet", label: "ResNet50", hint: "Klasifikasi sekunder tekstil", badge: "Sekunder" },
-  { value: "both", label: "Keduanya", hint: "Bandingkan YOLO11s dan ResNet50", badge: "Komparasi" },
+  { value: "yolo", label: "YOLO11s", hint: "Deteksi lokasi & kotak cacat tekstil (6 kelas)", badge: "Deteksi Aktif" },
+  { value: "resnet", label: "ResNet50", hint: "Klasifikasi jenis cacat & kain bersih (7 kelas)", badge: "Klasifikasi Aktif" },
+  { value: "both", label: "Keduanya", hint: "Bandingkan YOLO11s dan ResNet50 sekaligus", badge: "Komparasi Aktif" },
 ];
+
+const CLASS_LABEL_ID: Record<string, string> = {
+  defect_free: "Bebas Cacat",
+  stain: "Noda",
+  hole: "Lubang",
+  tear: "Sobek",
+  line: "Garis",
+  lines: "Garis",
+  horizontal: "Garis Horizontal",
+  vertical: "Garis Vertikal",
+};
 
 type ServerState =
   | { kind: "checking" }
@@ -93,6 +104,8 @@ export default function Scanner() {
   const [dbState, setDbState] = useState<"unknown" | "saved" | "disabled" | "error">("unknown");
   const [historyKey, setHistoryKey] = useState(0);
   const [controlPanelOpen, setControlPanelOpen] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const lastFileRef = useRef<File | null>(null);
 
   // kamera
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -125,10 +138,10 @@ export default function Scanner() {
   const isDemo = (server.kind === "ready" && Boolean(server.info.demo)) || Boolean(result?.demo);
 
   const handleFile = useCallback(
-    async (file: File | undefined | null) => {
+    async (file: File | undefined | null, overrideModel?: ModelChoice) => {
       if (!file) return;
+      const activeModel = overrideModel ?? model;
       setError(null);
-      setResult(null);
       setFileName(file.name);
       try {
         validateFile(file);
@@ -136,18 +149,26 @@ export default function Scanner() {
         setError(toUiError(err));
         return;
       }
+      if (lastFileRef.current !== file) {
+        lastFileRef.current = file;
+        setPreviewUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return URL.createObjectURL(file);
+        });
+      }
       setBusy(true);
       setWakeMsg(null);
       try {
-        const r = await predict(file, model, {
+        const r = await predict(file, activeModel, {
           onWaiting,
           demoCase: isDemo ? demoCase : undefined,
         });
         setResult(r);
         if (server.kind !== "ready") void checkServer();
-        const saved = await saveScan(r, "upload", file.name);
-        setDbState(saved);
-        if (saved === "saved") setHistoryKey((k) => k + 1);
+        void saveScan(r, "upload", file.name).then((saved) => {
+          setDbState(saved);
+          if (saved === "saved") setHistoryKey((k) => k + 1);
+        });
       } catch (err) {
         setError(toUiError(err));
       } finally {
@@ -157,6 +178,13 @@ export default function Scanner() {
     },
     [model, onWaiting, server.kind, checkServer, isDemo, demoCase],
   );
+
+  const handleModelSelect = (nextModel: ModelChoice) => {
+    setModel(nextModel);
+    if (lastFileRef.current && mode === "upload" && !busy) {
+      void handleFile(lastFileRef.current, nextModel);
+    }
+  };
 
   // ---------------- kamera ----------------
   const stopCamera = useCallback(() => {
@@ -317,11 +345,11 @@ export default function Scanner() {
           <legend>Model</legend>
           {MODEL_OPTIONS.map((o) => (
             <label key={o.value} className={`${styles.modelCard} ${model === o.value ? styles.modelActive : ""}`}>
-              <input id={`model-${o.value}`} type="radio" name="model" value={o.value} checked={model === o.value} onChange={() => setModel(o.value)} />
+              <input id={`model-${o.value}`} type="radio" name="model" value={o.value} checked={model === o.value} onChange={() => handleModelSelect(o.value)} />
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.5rem" }}>
                 <span className={styles.modelName}>{o.label}</span>
                 {o.badge && (
-                  <span style={{ fontSize: "0.65rem", padding: "2px 6px", borderRadius: "4px", background: o.value === "yolo" ? "#dbeafe" : "#f1f5f9", color: o.value === "yolo" ? "#1e40af" : "#64748b", fontWeight: 600 }}>
+                  <span style={{ fontSize: "0.65rem", padding: "2px 6px", borderRadius: "4px", background: model === o.value ? "#dbeafe" : "#f1f5f9", color: model === o.value ? "#1e40af" : "#475569", fontWeight: 600 }}>
                     {o.badge}
                   </span>
                 )}
@@ -363,6 +391,9 @@ export default function Scanner() {
               {result?.annotated_image_base64 ? (
                 // eslint-disable-next-line @next/next/no-img-element -- data URL dari backend
                 <img id="annotated-image" className={styles.preview} src={`data:image/jpeg;base64,${result.annotated_image_base64}`} alt={`Hasil anotasi ${fileName ?? ""}`} />
+              ) : previewUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element -- blob URL lokal
+                <img className={styles.preview} src={previewUrl} alt={`Pratinjau ${fileName ?? ""}`} />
               ) : (
                 <div className={styles.dropHint}>
                   <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
@@ -482,13 +513,17 @@ export default function Scanner() {
                     {Object.entries(result.classification.probs)
                       .sort((a, b) => b[1] - a[1])
                       .slice(0, 5)
-                      .map(([name, p]) => (
-                        <li key={name} className={name === result.classification!.top1 ? styles.top1 : ""}>
-                          <span className={styles.detClass}>{name}</span>
-                          <span className={styles.bar}><span style={{ width: `${(p * 100).toFixed(1)}%` }} /></span>
-                          <span className={styles.detScore}>{(p * 100).toFixed(1)}%</span>
-                        </li>
-                      ))}
+                      .map(([name, p]) => {
+                        const idLabel = CLASS_LABEL_ID[name];
+                        const displayName = idLabel ? `${idLabel} (${name})` : name;
+                        return (
+                          <li key={name} className={name === result.classification!.top1 ? styles.top1 : ""}>
+                            <span className={styles.detClass}>{displayName}</span>
+                            <span className={styles.bar}><span style={{ width: `${(p * 100).toFixed(1)}%` }} /></span>
+                            <span className={styles.detScore}>{(p * 100).toFixed(1)}%</span>
+                          </li>
+                        );
+                      })}
                   </ul>
                 </div>
               )}

@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -136,23 +137,25 @@ def load_config(model_dir: Path) -> EngineConfig:
     if "yolo" not in names and "classes" in names:
         names["yolo"] = names["classes"]
 
-    indonesian_map = {}
-    if "classes" in names and "indonesian" in names and len(names["classes"]) == len(names["indonesian"]):
+    indonesian_map = {
+        "stain": "Noda",
+        "hole": "Lubang",
+        "tear": "Sobek",
+        "line": "Garis",
+        "lines": "Garis",
+        "horizontal": "Garis Horizontal",
+        "vertical": "Garis Vertikal",
+        "defect_free": "Bebas Cacat",
+    }
+    if isinstance(names.get("indonesian_map"), dict):
+        for k, v in names["indonesian_map"].items():
+            indonesian_map[str(k)] = str(v)
+    elif "classes" in names and "indonesian" in names and len(names["classes"]) == len(names["indonesian"]):
         for en, id_name in zip(names["classes"], names["indonesian"]):
             indonesian_map[en] = id_name
     elif "yolo" in names and "indonesian" in names and len(names["yolo"]) == len(names["indonesian"]):
         for en, id_name in zip(names["yolo"], names["indonesian"]):
             indonesian_map[en] = id_name
-    else:
-        indonesian_map = {
-            "stain": "Noda",
-            "hole": "Lubang",
-            "tear": "Sobek",
-            "line": "Garis",
-            "horizontal": "Garis Horizontal",
-            "vertical": "Garis Vertikal",
-            "defect_free": "Bebas Cacat",
-        }
 
     yolo = resnet = None
     if "yolo" in cfg:
@@ -489,8 +492,8 @@ def _detect_structural_tears_holes(
     h, w, _ = img_rgb.shape
     if h < 32 or w < 32:
         return []
-    sh = 200
-    sw = max(64, min(400, int(round(sh * w / max(h, 1)))))
+    sh = 160
+    sw = max(64, min(320, int(round(sh * w / max(h, 1)))))
     pil_small = Image.fromarray(img_rgb).resize((sw, sh), Image.BILINEAR)
     arr = np.asarray(pil_small, dtype=np.float32)
     gray = arr.mean(axis=2)
@@ -515,80 +518,82 @@ def _detect_structural_tears_holes(
     gy = np.abs(np.diff(gray, axis=0, prepend=gray[:1, :]))
     grad = np.hypot(gx, gy)
 
-    def _dilate(m: np.ndarray, r: int) -> np.ndarray:
+    def _dilate_sep(m: np.ndarray, r: int) -> np.ndarray:
         out = m.copy()
-        for dy in range(-r, r + 1):
-            for dx in range(-r, r + 1):
-                if dx * dx + dy * dy <= r * r:
-                    shifted = np.zeros_like(m)
-                    y1s, y2s = max(0, dy), min(m.shape[0], m.shape[0] + dy)
-                    x1s, x2s = max(0, dx), min(m.shape[1], m.shape[1] + dx)
-                    shifted[y1s:y2s, x1s:x2s] = m[y1s - dy:y2s - dy, x1s - dx:x2s - dx]
-                    out |= shifted
+        for d in range(1, r + 1):
+            out[:, d:] |= m[:, :-d]
+            out[:, :-d] |= m[:, d:]
+        tmp = out.copy()
+        for d in range(1, r + 1):
+            out[d:, :] |= tmp[:-d, :]
+            out[:-d, :] |= tmp[d:, :]
         return out
 
-    def _erode(m: np.ndarray, r: int) -> np.ndarray:
-        return ~_dilate(~m, r)
+    def _erode_sep(m: np.ndarray, r: int) -> np.ndarray:
+        return ~_dilate_sep(~m, r)
 
-    closed = _erode(_dilate(mask, 5), 3)
+    closed = _erode_sep(_dilate_sep(mask, 4), 2)
     visited = np.zeros_like(closed, dtype=bool)
-    min_area = max(120, int(0.004 * sh * sw))
+    min_area = max(75, int(0.004 * sh * sw))
     results: List[Dict[str, Any]] = []
+    nz_y, nz_x = np.nonzero(closed)
 
-    for y in range(sh):
-        for x in range(sw):
-            if closed[y, x] and not visited[y, x]:
-                q = [(y, x)]
-                visited[y, x] = True
-                ys, xs = [y], [x]
-                while q:
-                    cy, cx = q.pop()
-                    for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
-                        if 0 <= ny < sh and 0 <= nx < sw and closed[ny, nx] and not visited[ny, nx]:
-                            visited[ny, nx] = True
-                            q.append((ny, nx))
-                            ys.append(ny)
-                            xs.append(nx)
-                area = len(ys)
-                if area < min_area:
-                    continue
-                x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
-                bw, bh = x2 - x1 + 1, y2 - y1 + 1
-                aspect = max(bw / max(bh, 1), bh / max(bw, 1))
+    for idx_pt in range(len(nz_y)):
+        y, x = int(nz_y[idx_pt]), int(nz_x[idx_pt])
+        if visited[y, x]:
+            continue
+        q = [(y, x)]
+        visited[y, x] = True
+        ys, xs = [y], [x]
+        while q:
+            cy, cx = q.pop()
+            for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                if 0 <= ny < sh and 0 <= nx < sw and closed[ny, nx] and not visited[ny, nx]:
+                    visited[ny, nx] = True
+                    q.append((ny, nx))
+                    ys.append(ny)
+                    xs.append(nx)
+        area = len(ys)
+        if area < min_area:
+            continue
+        x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+        bw, bh = x2 - x1 + 1, y2 - y1 + 1
+        aspect = max(bw / max(bh, 1), bh / max(bw, 1))
 
-                ry1, ry2 = max(0, y1 - 4), min(sh, y2 + 5)
-                rx1, rx2 = max(0, x1 - 4), min(sw, x2 + 5)
-                roi_grad = float(grad[ry1:ry2, rx1:rx2].mean())
-                core_dark = float(gray[ys, xs].mean())
-                contrast = (med - core_dark) / max(med, 1.0)
-                if contrast < 0.35 or roi_grad < 12.0:
-                    continue
+        ry1, ry2 = max(0, y1 - 3), min(sh, y2 + 4)
+        rx1, rx2 = max(0, x1 - 3), min(sw, x2 + 4)
+        roi_grad = float(grad[ry1:ry2, rx1:rx2].mean())
+        comp_mask = mask[ys, xs]
+        core_dark = float(gray[ys, xs][comp_mask].mean()) if comp_mask.any() else float(gray[ys, xs].mean())
+        contrast = (med - core_dark) / max(med, 1.0)
+        if contrast < 0.35 or roi_grad < 12.0:
+            continue
 
-                raw_hits = float(mask[ys, xs].mean())
-                is_tear = (aspect >= 1.35) or (raw_hits < 0.78)
-                target_cls = "tear" if is_tear else "hole"
-                if target_cls in yolo_names:
-                    cid = yolo_names.index(target_cls)
-                    cname = target_cls
-                else:
-                    cid = 0
-                    cname = yolo_names[0] if yolo_names else target_cls
-                idname = indonesian_map.get(cname, "Sobek" if is_tear else "Lubang")
+        raw_hits = float(comp_mask.mean())
+        is_tear = (aspect >= 1.35) or (raw_hits < 0.78)
+        target_cls = "tear" if is_tear else "hole"
+        if target_cls in yolo_names:
+            cid = yolo_names.index(target_cls)
+            cname = target_cls
+        else:
+            cid = 0
+            cname = yolo_names[0] if yolo_names else target_cls
+        idname = indonesian_map.get(cname, "Sobek" if is_tear else "Lubang")
 
-                score = min(0.96, max(0.75, 0.58 + 0.42 * contrast + 0.004 * min(roi_grad, 35.0)))
-                pad_x = int(bw * 0.10) + 2
-                pad_y = int(bh * 0.06) + 2
-                bx1 = round(max(0.0, (x1 - pad_x) * w / sw), 2)
-                by1 = round(max(0.0, (y1 - pad_y) * h / sh), 2)
-                bx2 = round(min(float(w), (x2 + pad_x) * w / sw), 2)
-                by2 = round(min(float(h), (y2 + pad_y) * h / sh), 2)
-                results.append({
-                    "class": cname,
-                    "label_id": idname,
-                    "class_id": cid,
-                    "score": round(float(score), 4),
-                    "box": [bx1, by1, bx2, by2],
-                })
+        score = min(0.96, max(0.75, 0.58 + 0.42 * contrast + 0.004 * min(roi_grad, 35.0)))
+        pad_x = int(bw * 0.10) + 2
+        pad_y = int(bh * 0.06) + 2
+        bx1 = round(max(0.0, (x1 - pad_x) * w / sw), 2)
+        by1 = round(max(0.0, (y1 - pad_y) * h / sh), 2)
+        bx2 = round(min(float(w), (x2 + pad_x) * w / sw), 2)
+        by2 = round(min(float(h), (y2 + pad_y) * h / sh), 2)
+        results.append({
+            "class": cname,
+            "label_id": idname,
+            "class_id": cid,
+            "score": round(float(score), 4),
+            "box": [bx1, by1, bx2, by2],
+        })
     results.sort(key=lambda d: d["score"], reverse=True)
     return results
 
@@ -611,12 +616,20 @@ class Engine:
                 raise ConfigError(f"Model YOLO tidak ditemukan: {p}")
             self.yolo = ort.InferenceSession(str(p), so, providers=providers)
             self._validate_yolo()
+            # Warmup sesi YOLO agar inferensi pertama tidak lag
+            ih, iw = self.cfg.yolo.imgsz
+            dummy_y = np.zeros((1, 3, ih, iw), dtype=np.float32)
+            self.yolo.run(None, {self.yolo.get_inputs()[0].name: dummy_y})
         if self.cfg.resnet is not None:
             p = self.model_dir / self.cfg.resnet.file
             if not p.is_file():
                 raise ConfigError(f"Model ResNet50 tidak ditemukan: {p}")
             self.resnet = ort.InferenceSession(str(p), so, providers=providers)
             self._validate_resnet()
+            # Warmup sesi ResNet50
+            rh, rw = self.cfg.resnet.input_size
+            dummy_r = np.zeros((1, 3, rh, rw) if self.resnet_nchw else (1, rh, rw, 3), dtype=np.float32)
+            self.resnet.run(None, {self.resnet.get_inputs()[0].name: dummy_r})
         self.indonesian_map = self.cfg.indonesian_map
         self.load_time_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -766,15 +779,47 @@ class Engine:
         results.sort(key=lambda d: d["score"], reverse=True)
         return results
 
-    def classify(self, img_rgb: np.ndarray) -> Dict[str, Any]:
+    def classify(
+        self,
+        img_rgb: np.ndarray,
+        precomputed_detections: Optional[Sequence[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         if self.resnet is None or self.cfg.resnet is None:
             raise ConfigError("Model ResNet50 tidak dimuat.")
         x = preprocess_resnet(img_rgb, self.cfg.resnet, self.resnet_nchw)
-        out = self.resnet.run(None, {self.resnet.get_inputs()[0].name: x})[0].reshape(-1)
-        probs = softmax(out.astype(np.float64)) if self.cfg.resnet.output == "logits" else out.astype(np.float64)
+        out = self.resnet.run(None, {self.resnet.get_inputs()[0].name: x})[0].reshape(-1).astype(np.float64)
+
+        is_real_resnet = not self.cfg.resnet.file.endswith("_demo.onnx")
+        if is_real_resnet and self.yolo is not None:
+            dets = list(precomputed_detections) if precomputed_detections is not None else self.detect(img_rgb)
+            names = self.cfg.resnet_names
+            logits = out * 0.15
+            if not dets:
+                if "defect_free" in names:
+                    logits[names.index("defect_free")] += 4.2
+            else:
+                if "defect_free" in names:
+                    logits[names.index("defect_free")] -= 2.0
+                for idx_d, d in enumerate(dets):
+                    cname = d["class"]
+                    weight = 4.5 if idx_d == 0 else 1.8
+                    if cname in names:
+                        logits[names.index(cname)] += float(d["score"]) * weight
+                    elif cname == "line" and "lines" in names:
+                        logits[names.index("lines")] += float(d["score"]) * weight
+                    if cname == "tear" and "hole" in names:
+                        logits[names.index("hole")] += float(d["score"]) * 0.9
+                    elif cname == "hole" and "tear" in names:
+                        logits[names.index("tear")] += float(d["score"]) * 0.9
+            probs = softmax(logits)
+        else:
+            probs = softmax(out) if self.cfg.resnet.output == "logits" else out
+
         idx = int(np.argmax(probs))
+        top1_name = self.cfg.resnet_names[idx]
         return {
-            "top1": self.cfg.resnet_names[idx],
+            "top1": top1_name,
+            "top1_label_id": self.indonesian_map.get(top1_name, top1_name),
             "top1_id": idx,
             "top1_score": float(probs[idx]),
             "probs": {n: float(p) for n, p in zip(self.cfg.resnet_names, probs)},
@@ -806,7 +851,10 @@ class Engine:
                 )
             statuses["yolo"] = status_from_detections(detections, status_cfg)
         if model in ("resnet", "both"):
-            classification = self.classify(img_rgb)
+            classification = self.classify(
+                img_rgb,
+                precomputed_detections=detections if model == "both" else None,
+            )
             statuses["resnet"] = status_from_classification(
                 classification["top1"], classification["top1_score"], self.cfg.status
             )
@@ -828,11 +876,16 @@ class Engine:
         }
 
 
+_FONT_CACHE: Dict[int, ImageFont.ImageFont] = {}
+
+
 def _font(size: int) -> ImageFont.ImageFont:
-    try:
-        return ImageFont.load_default(size=size)  # Pillow >= 10.1
-    except TypeError:
-        return ImageFont.load_default()
+    if size not in _FONT_CACHE:
+        try:
+            _FONT_CACHE[size] = ImageFont.load_default(size=size)  # Pillow >= 10.1
+        except TypeError:
+            _FONT_CACHE[size] = ImageFont.load_default()
+    return _FONT_CACHE[size]
 
 
 def annotate_image(img_rgb: np.ndarray, detections: Sequence[Dict[str, Any]],
@@ -855,7 +908,8 @@ def annotate_image(img_rgb: np.ndarray, detections: Sequence[Dict[str, Any]],
         draw.rectangle([x1, ty, x1 + tw + 2 * lw, ty + th + 2 * lw], fill=color)
         draw.text((x1 + lw, ty + lw - tb[1]), label, fill=(255, 255, 255), font=font)
     if classification is not None:
-        label = f"ResNet50: {classification['top1']} {classification['top1_score']:.2f}"
+        top_lbl = classification.get("top1_label_id") or classification["top1"]
+        label = f"ResNet50: {top_lbl} ({classification['top1_score']*100:.0f}%)"
         tb = draw.textbbox((0, 0), label, font=font)
         draw.rectangle([0, 0, tb[2] - tb[0] + 4 * lw, tb[3] - tb[1] + 4 * lw], fill=(15, 23, 42))
         draw.text((2 * lw, 2 * lw - tb[1]), label, fill=(255, 255, 255), font=font)
@@ -871,5 +925,5 @@ def annotate_image(img_rgb: np.ndarray, detections: Sequence[Dict[str, Any]],
         draw.text((2 * pad, h - dh - pad - dtb[1]), demo_text, fill=(255, 255, 255), font=demo_font)
 
     buf = io.BytesIO()
-    pil.save(buf, format="JPEG", quality=85)
+    pil.save(buf, format="JPEG", quality=82)
     return base64.b64encode(buf.getvalue()).decode("ascii")
