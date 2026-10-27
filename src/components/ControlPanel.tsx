@@ -34,9 +34,9 @@ export default function ControlPanel({ isOpen, onClose, onModelModeChange }: Con
   const [diag, setDiag] = useState<SystemDiagnostics | null>(null);
   const [webTargets, setWebTargets] = useState<Record<string, WebStatusTarget>>({});
   const [modelMode, setModelMode] = useState<"real" | "demo">("real");
-  const [confThreshold, setConfThreshold] = useState<number>(0.25);
-  const [iouThreshold, setIouThreshold] = useState<number>(0.5);
-  const [verifyThreshold, setVerifyThreshold] = useState<number>(0.25);
+  const [confThreshold, setConfThreshold] = useState<number>(0.08);
+  const [iouThreshold, setIouThreshold] = useState<number>(0.45);
+  const [verifyThreshold, setVerifyThreshold] = useState<number>(0.08);
   const [copied, setCopied] = useState(false);
 
   const fetchStatus = useCallback(async () => {
@@ -49,7 +49,18 @@ export default function ControlPanel({ isOpen, onClose, onModelModeChange }: Con
         if (data.model_mode) setModelMode(data.model_mode);
       }
 
-      // 2. Status web
+      // 2. Health & ambang batas
+      const resHealth = await fetch(`${API_URL}/health`, { cache: "no-store" });
+      if (resHealth.ok) {
+        const hData = await resHealth.json();
+        if (hData.thresholds) {
+          if (typeof hData.thresholds.conf_threshold === "number") setConfThreshold(hData.thresholds.conf_threshold);
+          if (typeof hData.thresholds.iou_threshold === "number") setIouThreshold(hData.thresholds.iou_threshold);
+          if (typeof hData.thresholds.verify_threshold === "number") setVerifyThreshold(hData.thresholds.verify_threshold);
+        }
+      }
+
+      // 3. Status web
       const resWeb = await fetch(`${API_URL}/system/web-status`, { cache: "no-store" });
       if (resWeb.ok) {
         const data = await resWeb.json();
@@ -246,9 +257,9 @@ export default function ControlPanel({ isOpen, onClose, onModelModeChange }: Con
                 </div>
                 <input
                   type="range"
-                  min="0.05"
-                  max="0.95"
-                  step="0.05"
+                  min="0.02"
+                  max="0.80"
+                  step="0.02"
                   value={confThreshold}
                   className={styles.slider}
                   onChange={(e) => {

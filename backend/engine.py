@@ -115,13 +115,13 @@ def load_config(model_dir: Path) -> EngineConfig:
                 "channel_order": "RGB",
                 "layout": "NCHW",
                 "letterbox_pad_value": 114,
-                "conf_threshold": 0.25,
-                "iou_threshold": 0.5,
+                "conf_threshold": 0.08,
+                "iou_threshold": 0.45,
                 "max_det": 300,
             },
             "status": {
-                "defect_threshold": 0.25,
-                "verify_threshold": 0.15,
+                "defect_threshold": 0.15,
+                "verify_threshold": 0.08,
             }
         }
 
@@ -204,8 +204,8 @@ def load_config(model_dir: Path) -> EngineConfig:
 
     s = cfg.get("status", {})
     status = StatusConfig(
-        defect_threshold=float(s.get("defect_threshold", 0.25)),
-        verify_threshold=float(s.get("verify_threshold", 0.15)),
+        defect_threshold=float(s.get("defect_threshold", 0.15)),
+        verify_threshold=float(s.get("verify_threshold", 0.08)),
         clean_class=s.get("clean_class"),
     )
     if not 0.0 <= status.verify_threshold <= status.defect_threshold <= 1.0:
@@ -548,15 +548,22 @@ class Engine:
         }
 
     # ---- inferensi ------------------------------------------------------- #
-    def detect(self, img_rgb: np.ndarray) -> List[Dict[str, Any]]:
+    def detect(
+        self,
+        img_rgb: np.ndarray,
+        conf_threshold: Optional[float] = None,
+        iou_threshold: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
         if self.yolo is None or self.cfg.yolo is None:
             raise ConfigError("Model YOLO tidak dimuat.")
         c = self.cfg.yolo
+        conf = float(conf_threshold) if conf_threshold is not None else c.conf_threshold
+        iou = float(iou_threshold) if iou_threshold is not None else c.iou_threshold
         lb, _, _ = letterbox(img_rgb, c.imgsz, c.pad_value)
         x = (lb.astype(np.float32) / 255.0).transpose(2, 0, 1)[None]
         x = np.ascontiguousarray(x)
         out = self.yolo.run(None, {self.yolo.get_inputs()[0].name: x})[0]
-        det = decode_yolo(out, len(self.cfg.yolo_names), c.conf_threshold, c.iou_threshold, c.max_det)
+        det = decode_yolo(out, len(self.cfg.yolo_names), conf, iou, c.max_det)
         if det.shape[0]:
             det[:, :4] = scale_boxes(det[:, :4], c.imgsz, img_rgb.shape[:2])
         results = []
@@ -588,7 +595,15 @@ class Engine:
             "probs": {n: float(p) for n, p in zip(self.cfg.resnet_names, probs)},
         }
 
-    def predict(self, img_rgb: np.ndarray, model: str = "yolo", annotate: bool = True, demo: bool = False) -> Dict[str, Any]:
+    def predict(
+        self,
+        img_rgb: np.ndarray,
+        model: str = "yolo",
+        annotate: bool = True,
+        demo: bool = False,
+        conf_threshold: Optional[float] = None,
+        iou_threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
         if model not in ("yolo", "resnet", "both"):
             raise ValueError("model harus yolo, resnet, atau both")
         t0 = time.perf_counter()
@@ -596,8 +611,15 @@ class Engine:
         classification: Optional[Dict[str, Any]] = None
         statuses: Dict[str, str] = {}
         if model in ("yolo", "both"):
-            detections = self.detect(img_rgb)
-            statuses["yolo"] = status_from_detections(detections, self.cfg.status)
+            detections = self.detect(img_rgb, conf_threshold=conf_threshold, iou_threshold=iou_threshold)
+            status_cfg = self.cfg.status
+            if conf_threshold is not None and conf_threshold < status_cfg.verify_threshold:
+                status_cfg = StatusConfig(
+                    defect_threshold=status_cfg.defect_threshold,
+                    verify_threshold=conf_threshold,
+                    clean_class=status_cfg.clean_class,
+                )
+            statuses["yolo"] = status_from_detections(detections, status_cfg)
         if model in ("resnet", "both"):
             classification = self.classify(img_rgb)
             statuses["resnet"] = status_from_classification(

@@ -178,6 +178,12 @@ def health() -> JSONResponse:
             "resnet": info["resnet"].get("file") if info["resnet"]["loaded"] else None,
             "resnet_size_bytes": info["resnet"].get("size_bytes") if info["resnet"]["loaded"] else None,
         },
+        "thresholds": {
+            "conf_threshold": eng.conf_threshold,
+            "iou_threshold": eng.iou_threshold,
+            "verify_threshold": eng.verify_threshold,
+            "defect_threshold": eng.cfg.status.defect_threshold,
+        },
         "load_time_ms": info["load_time_ms"],
         "classes": info["classes"],
         "indonesian_map": info.get("indonesian_map", {}),
@@ -191,6 +197,8 @@ def predict(
     file: UploadFile = File(..., description="Gambar JPG/PNG/WEBP, maks 8 MB"),
     model: str = Query("yolo", pattern="^(yolo|resnet|both)$"),
     demo_case: Optional[str] = Query(None, pattern="^(defect|uncertain|clean)$"),
+    conf_threshold: Optional[float] = Query(None, ge=0.01, le=0.99),
+    iou_threshold: Optional[float] = Query(None, ge=0.05, le=0.95),
 ) -> Dict[str, Any]:
     ctype = (file.content_type or "").lower()
     if ctype not in ALLOWED_TYPES:
@@ -223,9 +231,17 @@ def predict(
     if model == "both" and eng.resnet is None:
         model = "yolo"
     elif model == "resnet" and eng.resnet is None:
-        raise _error(400, "Model ResNet50 tidak dimuat di mode REAL. Model YOLO11s aktif mendeteksi seluruh kelas cacat tekstil.")
+        # Fallback ramah jika ResNet50 belum tersedia, beralih ke YOLO11s
+        model = "yolo"
 
-    return eng.predict(img, model=model, demo=is_demo)
+    res = eng.predict(
+        img,
+        model=model,
+        demo=is_demo,
+        conf_threshold=conf_threshold,
+        iou_threshold=iou_threshold,
+    )
+    return res
 
 
 # ==========================================
@@ -308,15 +324,18 @@ def update_config(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             eng.iou_threshold = float(payload["iou_threshold"])
         if "verify_threshold" in payload:
             eng.verify_threshold = float(payload["verify_threshold"])
+        if "defect_threshold" in payload:
+            eng.cfg.status.defect_threshold = float(payload["defect_threshold"])
 
     return {
         "status": "ok",
         "model_mode": state["model_mode"],
         "engine_ready": state["engine"] is not None,
         "thresholds": {
-            "conf_threshold": eng.conf_threshold if eng else 0.25,
-            "iou_threshold": eng.iou_threshold if eng else 0.5,
-            "verify_threshold": eng.verify_threshold if eng else 0.25,
+            "conf_threshold": eng.conf_threshold if eng else 0.08,
+            "iou_threshold": eng.iou_threshold if eng else 0.45,
+            "verify_threshold": eng.verify_threshold if eng else 0.08,
+            "defect_threshold": eng.cfg.status.defect_threshold if eng else 0.15,
         } if eng else None,
     }
 

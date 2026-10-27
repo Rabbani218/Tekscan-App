@@ -28,13 +28,13 @@
     "channel_order": "RGB",
     "layout": "NCHW",
     "letterbox_pad_value": 114,
-    "conf_threshold": 0.25,
-    "iou_threshold": 0.5,
+    "conf_threshold": 0.08,
+    "iou_threshold": 0.45,
     "max_det": 300
   },
   "status": {
-    "defect_threshold": 0.25,
-    "verify_threshold": 0.15
+    "defect_threshold": 0.15,
+    "verify_threshold": 0.08
   }
 }
 

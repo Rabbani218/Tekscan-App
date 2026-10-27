@@ -53,6 +53,12 @@ export interface HealthResponse {
     resnet: string | null;
     resnet_size_bytes?: number | null;
   };
+  thresholds?: {
+    conf_threshold: number;
+    iou_threshold: number;
+    verify_threshold: number;
+    defect_threshold: number;
+  };
   load_time_ms: number;
   classes: { yolo: string[]; resnet50: string[] };
   indonesian_map?: Record<string, string>;
@@ -178,15 +184,20 @@ export async function predict(
     shrink?: boolean;
     signal?: AbortSignal;
     demoCase?: DemoCase;
+    confThreshold?: number;
+    iouThreshold?: number;
   } = {},
 ): Promise<PredictResponse> {
   const body = opts.shrink === false ? file : await shrinkImage(file);
   if (body.size > MAX_UPLOAD_BYTES) throw new ApiError("invalid_file", "Gambar lebih dari 8 MB setelah dikecilkan.");
   const form = new FormData();
   form.append("file", body, "upload.jpg");
-  const demoParam = opts.demoCase ? `&demo_case=${opts.demoCase}` : "";
+  const params = new URLSearchParams({ model });
+  if (opts.demoCase) params.set("demo_case", opts.demoCase);
+  if (typeof opts.confThreshold === "number") params.set("conf_threshold", String(opts.confThreshold));
+  if (typeof opts.iouThreshold === "number") params.set("iou_threshold", String(opts.iouThreshold));
   const res = await fetchWithWake(
-    `${API_URL}/predict?model=${model}${demoParam}`,
+    `${API_URL}/predict?${params.toString()}`,
     { method: "POST", body: form, signal: opts.signal },
     opts.onWaiting,
   );

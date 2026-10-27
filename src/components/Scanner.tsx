@@ -21,10 +21,10 @@ import {
 import styles from "./Scanner.module.css";
 import ControlPanel from "./ControlPanel";
 
-const MODEL_OPTIONS: { value: ModelChoice; label: string; hint: string }[] = [
-  { value: "yolo", label: "YOLO11s", hint: "Deteksi cacat tekstil (6 kelas: noda, lubang, sobek, garis)" },
-  { value: "resnet", label: "ResNet50", hint: "Klasifikasi (opsional / sekunder)" },
-  { value: "both", label: "Keduanya", hint: "Bandingkan YOLO11s dan ResNet50" },
+const MODEL_OPTIONS: { value: ModelChoice; label: string; hint: string; badge?: string }[] = [
+  { value: "yolo", label: "YOLO11s", hint: "Deteksi cacat tekstil (6 kelas: noda, lubang, sobek, garis)", badge: "Model Aktif (Riil)" },
+  { value: "resnet", label: "ResNet50", hint: "Klasifikasi sekunder tekstil", badge: "Sekunder" },
+  { value: "both", label: "Keduanya", hint: "Bandingkan YOLO11s dan ResNet50", badge: "Komparasi" },
 ];
 
 type ServerState =
@@ -83,6 +83,7 @@ export default function Scanner() {
   const [model, setModel] = useState<ModelChoice>("yolo");
   const [mode, setMode] = useState<"upload" | "camera">("upload");
   const [demoCase, setDemoCase] = useState<DemoCase>("defect");
+  const [confThreshold, setConfThreshold] = useState<number>(0.08);
   const [server, setServer] = useState<ServerState>({ kind: "checking" });
   const [busy, setBusy] = useState(false);
   const [wakeMsg, setWakeMsg] = useState<string | null>(null);
@@ -93,6 +94,7 @@ export default function Scanner() {
   const [dbState, setDbState] = useState<"unknown" | "saved" | "disabled" | "error">("unknown");
   const [historyKey, setHistoryKey] = useState(0);
   const [controlPanelOpen, setControlPanelOpen] = useState(false);
+  const lastFileRef = useRef<File | null>(null);
 
   // kamera
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -112,6 +114,9 @@ export default function Scanner() {
     try {
       const info = await health((attempt, total) => setServer({ kind: "waking", attempt, total }));
       setServer({ kind: "ready", info });
+      if (info.thresholds?.conf_threshold) {
+        setConfThreshold(info.thresholds.conf_threshold);
+      }
     } catch (err) {
       setServer({ kind: "down", message: toUiError(err).message });
     }
@@ -125,8 +130,10 @@ export default function Scanner() {
   const isDemo = (server.kind === "ready" && Boolean(server.info.demo)) || Boolean(result?.demo);
 
   const handleFile = useCallback(
-    async (file: File | undefined | null) => {
+    async (file: File | undefined | null, overrideConf?: number) => {
       if (!file) return;
+      lastFileRef.current = file;
+      const activeConf = overrideConf !== undefined ? overrideConf : confThreshold;
       setError(null);
       setResult(null);
       setFileName(file.name);
@@ -142,6 +149,7 @@ export default function Scanner() {
         const r = await predict(file, model, {
           onWaiting,
           demoCase: isDemo ? demoCase : undefined,
+          confThreshold: activeConf,
         });
         setResult(r);
         if (server.kind !== "ready") void checkServer();
@@ -155,8 +163,15 @@ export default function Scanner() {
         setWakeMsg(null);
       }
     },
-    [model, onWaiting, server.kind, checkServer, isDemo, demoCase],
+    [model, onWaiting, server.kind, checkServer, isDemo, demoCase, confThreshold],
   );
+
+  const updateSensitivity = (val: number) => {
+    setConfThreshold(val);
+    if (lastFileRef.current && mode === "upload") {
+      void handleFile(lastFileRef.current, val);
+    }
+  };
 
   // ---------------- kamera ----------------
   const stopCamera = useCallback(() => {
@@ -196,6 +211,7 @@ export default function Scanner() {
               const r = await predict(blob, model, {
                 onWaiting,
                 demoCase: isDemo ? demoCase : undefined,
+                confThreshold,
               });
               setWakeMsg(null);
               if (!runningRef.current) break;
@@ -318,11 +334,53 @@ export default function Scanner() {
           {MODEL_OPTIONS.map((o) => (
             <label key={o.value} className={`${styles.modelCard} ${model === o.value ? styles.modelActive : ""}`}>
               <input id={`model-${o.value}`} type="radio" name="model" value={o.value} checked={model === o.value} onChange={() => setModel(o.value)} />
-              <span className={styles.modelName}>{o.label}</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.5rem" }}>
+                <span className={styles.modelName}>{o.label}</span>
+                {o.badge && (
+                  <span style={{ fontSize: "0.65rem", padding: "2px 6px", borderRadius: "4px", background: o.value === "yolo" ? "#dbeafe" : "#f1f5f9", color: o.value === "yolo" ? "#1e40af" : "#64748b", fontWeight: 600 }}>
+                    {o.badge}
+                  </span>
+                )}
+              </div>
               <span className={styles.modelHint}>{o.hint}</span>
             </label>
           ))}
         </fieldset>
+      </div>
+
+      <div className={styles.sensitivityBar}>
+        <div className={styles.sensitivityHeader}>
+          <span className={styles.sensitivityLabel}>🎯 Sensitivitas Deteksi:</span>
+          <span className={styles.sensitivityValue}>
+            {(confThreshold * 100).toFixed(0)}% ({confThreshold <= 0.09 ? "Peka / Rekomendasi" : confThreshold <= 0.18 ? "Standar" : "Ketat"})
+          </span>
+        </div>
+        <div className={styles.sensitivityPresets}>
+          <button
+            type="button"
+            className={`${styles.sensBtn} ${confThreshold === 0.08 ? styles.sensBtnActive : ""}`}
+            onClick={() => updateSensitivity(0.08)}
+            title="Peka (8%): Menangkap sobekan, noda, dan lubang halus atau bertekstur"
+          >
+            ⚡ Peka (8% - Rekomendasi)
+          </button>
+          <button
+            type="button"
+            className={`${styles.sensBtn} ${confThreshold === 0.15 ? styles.sensBtnActive : ""}`}
+            onClick={() => updateSensitivity(0.15)}
+            title="Standar (15%): Inspeksi umum kain"
+          >
+            🔍 Standar (15%)
+          </button>
+          <button
+            type="button"
+            className={`${styles.sensBtn} ${confThreshold === 0.25 ? styles.sensBtnActive : ""}`}
+            onClick={() => updateSensitivity(0.25)}
+            title="Ketat (25%): Hanya cacat dengan keyakinan sangat tinggi"
+          >
+            🔒 Ketat (25%)
+          </button>
+        </div>
       </div>
 
       <div className={styles.grid}>
@@ -440,6 +498,10 @@ export default function Scanner() {
                   <span className={styles.metricLabel}>Gambar</span>
                   <span className={styles.metricValue}>{result.image.w}×{result.image.h}</span>
                 </div>
+                <div>
+                  <span className={styles.metricLabel}>Sensitivitas</span>
+                  <span className={styles.metricValue}>{(confThreshold * 100).toFixed(0)}%</span>
+                </div>
               </div>
 
               {result.model === "both" && (
@@ -453,7 +515,20 @@ export default function Scanner() {
                 <div>
                   <h3 className={styles.h3}>Deteksi ({result.detections.length})</h3>
                   {result.detections.length === 0 ? (
-                    <p className={styles.muted}>Tidak ada kotak cacat di atas ambang.</p>
+                    <div>
+                      <p className={styles.muted}>
+                        Tidak ada kotak cacat di atas ambang sensitivitas {(confThreshold * 100).toFixed(0)}%.
+                      </p>
+                      {confThreshold > 0.08 && (
+                        <button
+                          type="button"
+                          className={styles.quickRerunBtn}
+                          onClick={() => updateSensitivity(0.08)}
+                        >
+                          ⚡ Uji dengan Sensitivitas Peka (8%)
+                        </button>
+                      )}
+                    </div>
                   ) : (
                     <ul id="detections" className={styles.detList}>
                       {result.detections.map((d, i) => (
