@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pyright: reportMissingImports=false
 """TEKSCAN — Desktop Control Panel, Live Terminal & Cross-Laptop Self-Healing App.
 
 Jalankan cukup dengan:
@@ -31,36 +32,33 @@ import sys
 import json
 import time
 import queue
-import socket
 import shutil
-import signal
 import platform
 import threading
 import subprocess
 import webbrowser
 import urllib.request
-import urllib.error
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 ROOT_DIR = Path(__file__).resolve().parent
+WORKSPACE_DIR = ROOT_DIR.parent
 BACKEND_DIR = ROOT_DIR / "backend"
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+for _p in (str(BACKEND_DIR), str(ROOT_DIR), str(WORKSPACE_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-try:
-    from backend.self_healing import (
+if TYPE_CHECKING:
+    from tekscan.backend.self_healing import (
         SelfHealer,
         DEFAULT_VERCEL_URL,
         DEFAULT_HF_URL,
         REQUIRED_PYTHON_PACKAGES,
     )
-except ImportError:
-    from self_healing import (  # type: ignore[no-redef]
+else:
+    from self_healing import (
         SelfHealer,
         DEFAULT_VERCEL_URL,
         DEFAULT_HF_URL,

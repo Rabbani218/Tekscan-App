@@ -8,31 +8,33 @@ Fitur:
 - Endpoint Kontrol Panel & Pemantauan Status Web
 """
 from __future__ import annotations
+# pyright: reportMissingImports=false
 
 import logging
 import os
 import sys
 import time
-import urllib.request
-import urllib.error
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 _BACKEND_DIR = Path(__file__).resolve().parent
-if str(_BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(_BACKEND_DIR))
+_TEKSCAN_DIR = _BACKEND_DIR.parent
+_WORKSPACE_DIR = _TEKSCAN_DIR.parent
+for _p in (str(_BACKEND_DIR), str(_TEKSCAN_DIR), str(_WORKSPACE_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-try:
-    from backend.engine import ConfigError, Engine, decode_image
-    from backend.self_healing import healer
-except ImportError:
-    from engine import ConfigError, Engine, decode_image  # type: ignore[no-redef]
-    from self_healing import healer  # type: ignore[no-redef]
+if TYPE_CHECKING:
+    from tekscan.backend.engine import ConfigError, Engine, decode_image
+    from tekscan.backend.self_healing import healer
+else:
+    from engine import ConfigError, Engine, decode_image
+    from self_healing import healer
 
 log = logging.getLogger("tekscan")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
