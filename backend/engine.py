@@ -609,7 +609,8 @@ def _detect_structural_tears_holes(
     # =========================================================================
     # CABANG 1: KAIN RAJUT / TENUN BERPOLA TINGGI (Ladder / Garis Vertikal / Horizontal)
     # =========================================================================
-    if grad_med > 22.0 and std_gray > 38.0:
+    is_high_freq_knit = grad_med > 22.0 and std_gray > 38.0
+    if is_high_freq_knit:
         sat = arr.max(axis=2) - arr.min(axis=2)
         not_annotation = sat < 25.0
         dark_stitch = (gray < (med_gray - 0.85 * std_gray)) & not_annotation
@@ -642,13 +643,12 @@ def _detect_structural_tears_holes(
                 cls_t = "tear"
             sc = min(0.94, 0.72 + 0.05 * float(anom_score[ys, xs].mean()))
             results.append(_make_det(cls_t, sc, x1, y1, x2, y2, pad_x=3, pad_y=4))
-        results.sort(key=lambda d: d["score"], reverse=True)
-        return results[:5]
 
     # =========================================================================
-    # CABANG 2: RONGGA FISIK (SOBEK / LUBANG) & NODA GELAP (DARK STAIN)
+    # CABANG 2: RONGGA FISIK (SOBEK / LUBANG), GARIS (LINE), & NODA GELAP (DARK STAIN)
     # =========================================================================
-    if med_gray >= 65.0 and border_med >= 65.0 and std_gray <= 62.0:
+    cavity_mask = np.zeros((sh, sw), dtype=bool)
+    if not is_high_freq_knit and med_gray >= 65.0 and border_med >= 65.0 and std_gray <= 62.0:
         thresh = min(med_gray * 0.56, med_gray - 1.45 * std_gray, border_med * 0.60)
         if thresh >= 15.0:
             dark_mask = gray < thresh
@@ -684,6 +684,14 @@ def _detect_structural_tears_holes(
                         raw_fill = float(comp_hits.mean())
                         is_tear = (aspect >= 1.35) or (raw_fill < 0.78)
                         target_cls = "tear" if is_tear else "hole"
+                        cavity_mask[ry1:ry2, rx1:rx2] = True
+                    elif aspect >= 4.2 and min(bw, bh) <= max(14, int(0.08 * min(sw, sh))):
+                        if bw / max(bh, 1) >= 3.5 and "horizontal" in yolo_names:
+                            target_cls = "horizontal"
+                        elif bh / max(bw, 1) >= 3.5 and "vertical" in yolo_names:
+                            target_cls = "vertical"
+                        else:
+                            target_cls = "line" if "line" in yolo_names else "stain"
                     else:
                         target_cls = "stain"
 
@@ -693,9 +701,9 @@ def _detect_structural_tears_holes(
                     results.append(_make_det(target_cls, score, x1, y1, x2, y2, pad_x=pad_x, pad_y=pad_y))
 
     # =========================================================================
-    # CABANG 3: NODA BERWARNA / KROMATIK (CHROMATIC STAIN)
+    # CABANG 3: NODA BERWARNA / KROMATIK & PERGESERAN OPONEN WARNA (MULTI-STAIN)
     # =========================================================================
-    if med_gray >= 85.0 and std_gray <= 58.0:
+    if not is_high_freq_knit and med_gray >= 75.0 and std_gray <= 58.0:
         med_rgb = np.median(arr.reshape(-1, 3), axis=0)
         med_norm = med_rgb / (float(med_rgb.sum()) + 1e-5)
         px_norm = arr / (arr.sum(axis=2, keepdims=True) + 1e-5)
@@ -706,16 +714,18 @@ def _detect_structural_tears_holes(
         sat_excess = sat - med_sat
         max_ch_drop = np.max(med_rgb[None, None, :] - arr, axis=2)
 
+        # Sub-cabang 3A: Noda kromatik saturasi tinggi (saus, anggur, tinta, karat)
         chroma_mask = (
             (chroma_dist > 0.085)
             & (sat_excess > 24.0)
             & (max_ch_drop > 35.0)
             & (gray > 35.0)
+            & (~cavity_mask)
         )
         c_frac = float(chroma_mask.mean())
-        if 0.003 <= c_frac <= 0.35:
+        if 0.002 <= c_frac <= 0.35:
             closed_chroma = _erode_sep_2d(_dilate_sep_2d(chroma_mask, 3, 2), 1, 1)
-            min_c_area = max(75, int(0.004 * sh * sw))
+            min_c_area = max(65, int(0.0035 * sh * sw))
             for ys, xs in _extract_connected_components(closed_chroma, min_c_area):
                 x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
                 bw, bh = x2 - x1 + 1, y2 - y1 + 1
@@ -726,7 +736,28 @@ def _detect_structural_tears_holes(
                 score = min(0.95, max(0.78, 0.68 + 0.65 * min(mean_cd, 0.35) + 0.001 * min(mean_se, 80.0)))
                 results.append(_make_det("stain", score, x1, y1, x2, y2, pad_x=3, pad_y=3))
 
-    # Deduplikasi kotak bersarang (nested boxes) dengan kelas yang sama
+        # Sub-cabang 3B: Noda pergeseran rona/oponen warna (bercak merah muda/pink/kekuningan pada kain robek/putih)
+        rg = arr[:, :, 0] - arr[:, :, 1]
+        rg_excess = rg - float(np.median(rg))
+        opp_mask = (rg_excess > 18.0) & (gray > 65.0) & (~cavity_mask)
+        opp_frac = float(opp_mask.mean())
+        if 0.0008 <= opp_frac <= 0.18:
+            closed_opp = _erode_sep_2d(_dilate_sep_2d(opp_mask, 4, 2), 1, 1)
+            min_opp_area = max(24, int(0.0007 * sh * sw))
+            for ys, xs in _extract_connected_components(closed_opp, min_opp_area):
+                x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+                bw, bh = x2 - x1 + 1, y2 - y1 + 1
+                if (bw * bh) > 0.30 * (sh * sw):
+                    continue
+                max_rg_val = float(rg_excess[ys, xs].max())
+                mean_rg_val = float(rg_excess[ys, xs].mean())
+                # Pastikan benar-benar bercak warna menonjol (bukan pinggiran kancing atau bayangan halus)
+                if max_rg_val < 34.0:
+                    continue
+                score = min(0.91, max(0.72, 0.60 + 0.0045 * max_rg_val + 0.002 * mean_rg_val))
+                results.append(_make_det("stain", score, x1, y1, x2, y2, pad_x=2, pad_y=2))
+
+    # Deduplikasi kotak bersarang (nested boxes)
     results.sort(key=lambda d: d["score"], reverse=True)
     filtered: List[Dict[str, Any]] = []
     for cand in results:
@@ -741,7 +772,11 @@ def _detect_structural_tears_holes(
             inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
             iou = inter / (c_area + k_area - inter + 1e-6)
             containment = inter / min(c_area, k_area)
-            if iou > 0.40 or (cand["class"] == kept["class"] and containment > 0.60):
+            if iou > 0.38 or (cand["class"] == kept["class"] and containment > 0.55):
+                redundant = True
+                break
+            # Jangan izinkan kotak noda kecil muncul tepat di dalam rongga sobekan/lubang
+            if kept["class"] in ("tear", "hole") and cand["class"] == "stain" and containment > 0.45:
                 redundant = True
                 break
         if not redundant:
@@ -906,17 +941,13 @@ class Engine:
 
         results: List[Dict[str, Any]] = []
         for x1, y1, x2, y2, score, cid in det.tolist():
-            # Jika detektor struktural sudah menemukan sobekan/lubang makroskopik yang jelas,
-            # abaikan derau konfidensi rendah dari kepala YOLO.
-            if structural and float(score) < 0.25:
-                continue
             cid_int = int(cid)
             if is_real_model:
                 cid_int = _refine_yolo_class(img_rgb, (x1, y1, x2, y2), cid_int, self.cfg.yolo_names)
             cname = self.cfg.yolo_names[cid_int]
             idname = self.indonesian_map.get(cname, cname)
             box = [round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)]
-            if any(_box_iou(box, s["box"]) > 0.30 for s in structural):
+            if any(_box_iou(box, s["box"]) > 0.25 for s in structural):
                 continue
             results.append({
                 "class": cname,
@@ -950,18 +981,28 @@ class Engine:
                     logits[names.index("defect_free")] += 4.2
             else:
                 if "defect_free" in names:
-                    logits[names.index("defect_free")] -= 2.0
+                    logits[names.index("defect_free")] -= 2.5
+                class_counts: Dict[str, int] = {}
                 for idx_d, d in enumerate(dets):
                     cname = d["class"]
-                    weight = 4.5 if idx_d == 0 else 1.8
+                    cnt = class_counts.get(cname, 0)
+                    class_counts[cname] = cnt + 1
+                    if idx_d == 0:
+                        weight = 4.6
+                    elif cnt == 0:
+                        weight = 3.4
+                    elif cnt == 1:
+                        weight = 0.45
+                    else:
+                        weight = 0.08
                     if cname in names:
                         logits[names.index(cname)] += float(d["score"]) * weight
                     elif cname == "line" and "lines" in names:
                         logits[names.index("lines")] += float(d["score"]) * weight
-                    if cname == "tear" and "hole" in names:
-                        logits[names.index("hole")] += float(d["score"]) * 0.9
-                    elif cname == "hole" and "tear" in names:
-                        logits[names.index("tear")] += float(d["score"]) * 0.9
+                    if cname == "tear" and "hole" in names and cnt == 0:
+                        logits[names.index("hole")] += float(d["score"]) * 0.6
+                    elif cname == "hole" and "tear" in names and cnt == 0:
+                        logits[names.index("tear")] += float(d["score"]) * 0.6
             probs = softmax(logits)
         else:
             probs = softmax(out) if self.cfg.resnet.output == "logits" else out

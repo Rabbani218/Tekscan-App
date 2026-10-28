@@ -37,6 +37,17 @@ const CLASS_LABEL_ID: Record<string, string> = {
   vertical: "Garis Vertikal",
 };
 
+const CLASS_COLOR: Record<string, string> = {
+  stain: "#dc2626",
+  hole: "#f59e0b",
+  tear: "#10b981",
+  line: "#9333ea",
+  lines: "#9333ea",
+  horizontal: "#2563eb",
+  vertical: "#ec4899",
+  defect_free: "#059669",
+};
+
 type ServerState =
   | { kind: "checking" }
   | { kind: "waking"; attempt: number; total: number }
@@ -477,15 +488,64 @@ export default function Scanner() {
                   {result.detections.length === 0 ? (
                     <p className={styles.muted}>Tidak ada kotak cacat di atas ambang.</p>
                   ) : (
-                    <ul id="detections" className={styles.detList}>
-                      {result.detections.map((d, i) => (
-                        <li key={i}>
-                          <span className={styles.detClass}>{d.label_id ? `${d.label_id} (${d.class})` : d.class}</span>
-                          <span className={styles.bar}><span style={{ width: `${(d.score * 100).toFixed(1)}%` }} /></span>
-                          <span className={styles.detScore}>{(d.score * 100).toFixed(1)}%</span>
-                        </li>
-                      ))}
-                    </ul>
+                    <>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
+                        {Object.entries(
+                          result.detections.reduce<Record<string, { label: string; count: number; color: string }>>(
+                            (acc, d) => {
+                              const key = d.class;
+                              const label = d.label_id ? `${d.label_id} (${d.class})` : (CLASS_LABEL_ID[key] ? `${CLASS_LABEL_ID[key]} (${key})` : key);
+                              const color = CLASS_COLOR[key] ?? "#2563eb";
+                              if (!acc[key]) acc[key] = { label, count: 0, color };
+                              acc[key].count += 1;
+                              return acc;
+                            },
+                            {},
+                          ),
+                        ).map(([clsKey, info]) => (
+                          <span
+                            key={clsKey}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              fontSize: "0.78rem",
+                              fontWeight: 600,
+                              padding: "4px 10px",
+                              borderRadius: "999px",
+                              background: "#f8fafc",
+                              border: `1px solid ${info.color}55`,
+                              color: "#1e293b",
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: "8px",
+                                height: "8px",
+                                borderRadius: "50%",
+                                background: info.color,
+                                display: "inline-block",
+                              }}
+                            />
+                            {info.label}: <b>{info.count}</b>
+                          </span>
+                        ))}
+                      </div>
+                      <ul id="detections" className={styles.detList}>
+                        {result.detections.map((d, i) => {
+                          const barColor = CLASS_COLOR[d.class] ?? "#2563eb";
+                          return (
+                            <li key={i}>
+                              <span className={styles.detClass}>{d.label_id ? `${d.label_id} (${d.class})` : d.class}</span>
+                              <span className={styles.bar}>
+                                <span style={{ width: `${(d.score * 100).toFixed(1)}%`, background: barColor }} />
+                              </span>
+                              <span className={styles.detScore}>{(d.score * 100).toFixed(1)}%</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </>
                   )}
                 </div>
               )}
