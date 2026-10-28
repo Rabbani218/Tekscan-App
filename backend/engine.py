@@ -465,79 +465,67 @@ def _refine_yolo_class(
     ctx_gray = img_rgb[cy1:cy2, cx1:cx2].mean(axis=2)
     patch_gray = patch.mean(axis=2)
     ctx_med = float(np.median(ctx_gray))
-    dark_contrast = (ctx_med - float(np.percentile(patch_gray, 20))) / max(ctx_med, 1.0)
+    patch_p15 = float(np.percentile(patch_gray, 15))
+    dark_contrast = (ctx_med - patch_p15) / max(ctx_med, 1.0)
+
+    gx = np.abs(np.diff(patch_gray, axis=1, prepend=patch_gray[:, :1]))
+    gy = np.abs(np.diff(patch_gray, axis=0, prepend=patch_gray[:1, :]))
+    grad_p90 = float(np.percentile(np.hypot(gx, gy), 90))
 
     def _idx(name: str) -> int:
         return yolo_names.index(name) if name in yolo_names else raw_cid
 
-    if bw / bh >= 3.0 and "horizontal" in yolo_names:
+    if bw / bh >= 3.2 and "horizontal" in yolo_names:
         return _idx("horizontal")
-    if bh / bw >= 3.0 and "vertical" in yolo_names:
+    if bh / bw >= 3.2 and "vertical" in yolo_names:
         return _idx("vertical")
-    if dark_contrast >= 0.38:
+    if dark_contrast >= 0.42 and patch_p15 < 56.0 and grad_p90 >= 55.0:
         if max(bw / bh, bh / bw) >= 1.35 or (bw * bh) >= 0.012 * (w * h):
             return _idx("tear")
         return _idx("hole")
-    if max(bw / bh, bh / bw) >= 2.2 and "line" in yolo_names:
+    if max(bw / bh, bh / bw) >= 2.6 and grad_p90 >= 48.0 and "line" in yolo_names:
         return _idx("line")
     return raw_cid
 
 
-def _detect_structural_tears_holes(
-    img_rgb: np.ndarray,
-    yolo_names: Sequence[str],
-    indonesian_map: Dict[str, str],
-) -> List[Dict[str, Any]]:
-    """Deteksi morfologis sobekan (tear) dan lubang (hole) makroskopik pada permukaan kain."""
-    h, w, _ = img_rgb.shape
-    if h < 32 or w < 32:
-        return []
-    sh = 160
-    sw = max(64, min(320, int(round(sh * w / max(h, 1)))))
-    pil_small = Image.fromarray(img_rgb).resize((sw, sh), Image.BILINEAR)
-    arr = np.asarray(pil_small, dtype=np.float32)
-    gray = arr.mean(axis=2)
+def _dilate_sep_2d(m: np.ndarray, rx: int, ry: int) -> np.ndarray:
+    out = m.copy()
+    for d in range(1, rx + 1):
+        out[:, d:] |= m[:, :-d]
+        out[:, :-d] |= m[:, d:]
+    tmp = out.copy()
+    for d in range(1, ry + 1):
+        out[d:, :] |= tmp[:-d, :]
+        out[:-d, :] |= tmp[d:, :]
+    return out
 
-    border = np.concatenate([gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]])
-    med = float(np.median(gray))
-    std = float(gray.std())
-    border_med = float(np.median(border))
 
-    if med < 65.0 or border_med < 65.0 or std > 62.0:
-        return []
-    thresh = min(med * 0.56, med - 1.45 * std, border_med * 0.60)
-    if thresh < 15.0:
-        return []
+def _erode_sep_2d(m: np.ndarray, rx: int, ry: int) -> np.ndarray:
+    return ~_dilate_sep_2d(~m, rx, ry)
 
-    mask = gray < thresh
-    frac = float(mask.mean())
-    if frac < 0.003 or frac > 0.35:
-        return []
 
-    gx = np.abs(np.diff(gray, axis=1, prepend=gray[:, :1]))
-    gy = np.abs(np.diff(gray, axis=0, prepend=gray[:1, :]))
-    grad = np.hypot(gx, gy)
+def _box_mean_2d(a: np.ndarray, rx: int, ry: int) -> np.ndarray:
+    kx = 2 * rx + 1
+    pad_x = np.pad(a, ((0, 0), (rx, rx)), mode="edge")
+    cs_x = np.concatenate(
+        [np.zeros((a.shape[0], 1), dtype=np.float32), np.cumsum(pad_x, axis=1, dtype=np.float32)],
+        axis=1,
+    )
+    hm = (cs_x[:, kx:] - cs_x[:, :-kx]) / kx
+    ky = 2 * ry + 1
+    pad_y = np.pad(hm, ((ry, ry), (0, 0)), mode="edge")
+    cs_y = np.concatenate(
+        [np.zeros((1, a.shape[1]), dtype=np.float32), np.cumsum(pad_y, axis=0, dtype=np.float32)],
+        axis=0,
+    )
+    return (cs_y[ky:, :] - cs_y[:-ky, :]) / ky
 
-    def _dilate_sep(m: np.ndarray, r: int) -> np.ndarray:
-        out = m.copy()
-        for d in range(1, r + 1):
-            out[:, d:] |= m[:, :-d]
-            out[:, :-d] |= m[:, d:]
-        tmp = out.copy()
-        for d in range(1, r + 1):
-            out[d:, :] |= tmp[:-d, :]
-            out[:-d, :] |= tmp[d:, :]
-        return out
 
-    def _erode_sep(m: np.ndarray, r: int) -> np.ndarray:
-        return ~_dilate_sep(~m, r)
-
-    closed = _erode_sep(_dilate_sep(mask, 4), 2)
-    visited = np.zeros_like(closed, dtype=bool)
-    min_area = max(75, int(0.004 * sh * sw))
-    results: List[Dict[str, Any]] = []
-    nz_y, nz_x = np.nonzero(closed)
-
+def _extract_connected_components(binary_mask: np.ndarray, min_area: int) -> List[Tuple[List[int], List[int]]]:
+    sh, sw = binary_mask.shape
+    visited = np.zeros_like(binary_mask, dtype=bool)
+    nz_y, nz_x = np.nonzero(binary_mask)
+    comps: List[Tuple[List[int], List[int]]] = []
     for idx_pt in range(len(nz_y)):
         y, x = int(nz_y[idx_pt]), int(nz_x[idx_pt])
         if visited[y, x]:
@@ -548,54 +536,217 @@ def _detect_structural_tears_holes(
         while q:
             cy, cx = q.pop()
             for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
-                if 0 <= ny < sh and 0 <= nx < sw and closed[ny, nx] and not visited[ny, nx]:
+                if 0 <= ny < sh and 0 <= nx < sw and binary_mask[ny, nx] and not visited[ny, nx]:
                     visited[ny, nx] = True
                     q.append((ny, nx))
                     ys.append(ny)
                     xs.append(nx)
-        area = len(ys)
-        if area < min_area:
-            continue
-        x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
-        bw, bh = x2 - x1 + 1, y2 - y1 + 1
-        aspect = max(bw / max(bh, 1), bh / max(bw, 1))
+        if len(ys) >= min_area:
+            comps.append((ys, xs))
+    return comps
 
-        ry1, ry2 = max(0, y1 - 3), min(sh, y2 + 4)
-        rx1, rx2 = max(0, x1 - 3), min(sw, x2 + 4)
-        roi_grad = float(grad[ry1:ry2, rx1:rx2].mean())
-        comp_mask = mask[ys, xs]
-        core_dark = float(gray[ys, xs][comp_mask].mean()) if comp_mask.any() else float(gray[ys, xs].mean())
-        contrast = (med - core_dark) / max(med, 1.0)
-        if contrast < 0.35 or roi_grad < 12.0:
-            continue
 
-        raw_hits = float(comp_mask.mean())
-        is_tear = (aspect >= 1.35) or (raw_hits < 0.78)
-        target_cls = "tear" if is_tear else "hole"
-        if target_cls in yolo_names:
-            cid = yolo_names.index(target_cls)
-            cname = target_cls
+def _detect_structural_tears_holes(
+    img_rgb: np.ndarray,
+    yolo_names: Sequence[str],
+    indonesian_map: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """Deteksi multi-cabang untuk cacat tekstil:
+    1. Anomali struktur pada kain rajut/tenun berpola tinggi (Garis Vertikal / Horizontal / Ladder / Sobek).
+    2. Rongga fisik sobekan (tear) & lubang (hole) vs noda gelap (dark stain).
+    3. Noda berwarna / kromatik (chromatic stain: tinta, saus, anggur, karat, minyak).
+    """
+    h, w, _ = img_rgb.shape
+    if h < 32 or w < 32:
+        return []
+    sh = 160
+    sw = max(64, min(320, int(round(sh * w / max(h, 1)))))
+    pil_small = Image.fromarray(img_rgb).resize((sw, sh), Image.BILINEAR)
+    arr = np.asarray(pil_small, dtype=np.float32)
+    gray = arr.mean(axis=2)
+
+    gx = np.abs(np.diff(gray, axis=1, prepend=gray[:, :1]))
+    gy = np.abs(np.diff(gray, axis=0, prepend=gray[:1, :]))
+    grad = np.hypot(gx, gy)
+
+    med_gray = float(np.median(gray))
+    std_gray = float(gray.std())
+    grad_med = float(np.median(grad))
+    border = np.concatenate([gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]])
+    border_med = float(np.median(border))
+
+    results: List[Dict[str, Any]] = []
+
+    def _make_det(
+        cls_name: str,
+        score: float,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        pad_x: int = 3,
+        pad_y: int = 3,
+    ) -> Dict[str, Any]:
+        if cls_name in yolo_names:
+            cid = yolo_names.index(cls_name)
+            cname = cls_name
         else:
             cid = 0
-            cname = yolo_names[0] if yolo_names else target_cls
-        idname = indonesian_map.get(cname, "Sobek" if is_tear else "Lubang")
-
-        score = min(0.96, max(0.75, 0.58 + 0.42 * contrast + 0.004 * min(roi_grad, 35.0)))
-        pad_x = int(bw * 0.10) + 2
-        pad_y = int(bh * 0.06) + 2
+            cname = yolo_names[0] if yolo_names else cls_name
+        idname = indonesian_map.get(cname, cname)
         bx1 = round(max(0.0, (x1 - pad_x) * w / sw), 2)
         by1 = round(max(0.0, (y1 - pad_y) * h / sh), 2)
         bx2 = round(min(float(w), (x2 + pad_x) * w / sw), 2)
         by2 = round(min(float(h), (y2 + pad_y) * h / sh), 2)
-        results.append({
+        return {
             "class": cname,
             "label_id": idname,
             "class_id": cid,
             "score": round(float(score), 4),
             "box": [bx1, by1, bx2, by2],
-        })
+        }
+
+    # =========================================================================
+    # CABANG 1: KAIN RAJUT / TENUN BERPOLA TINGGI (Ladder / Garis Vertikal / Horizontal)
+    # =========================================================================
+    if grad_med > 22.0 and std_gray > 38.0:
+        sat = arr.max(axis=2) - arr.min(axis=2)
+        not_annotation = sat < 25.0
+        dark_stitch = (gray < (med_gray - 0.85 * std_gray)) & not_annotation
+        local_dark = _box_mean_2d(dark_stitch.astype(np.float32), rx=4, ry=8)
+        local_gy = _box_mean_2d(gy * not_annotation.astype(np.float32), rx=4, ry=8)
+
+        valid_zone = np.zeros_like(dark_stitch, dtype=bool)
+        valid_zone[int(sh * 0.08):int(sh * 0.82), int(sw * 0.08):int(sw * 0.92)] = True
+
+        bg_dark_med = float(np.median(local_dark[valid_zone]))
+        bg_dark_std = float(local_dark[valid_zone].std()) + 1e-5
+        bg_gy_med = float(np.median(local_gy[valid_zone]))
+
+        anom_score = ((local_dark - bg_dark_med) / bg_dark_std) + 0.6 * np.maximum(
+            0.0, (local_gy - bg_gy_med) / (bg_gy_med + 1.0)
+        )
+        anom_mask = (anom_score > 2.25) & valid_zone
+        closed_anom = _erode_sep_2d(_dilate_sep_2d(anom_mask, 3, 6), 1, 2)
+        min_anom_area = max(35, int(0.004 * sh * sw))
+        for ys, xs in _extract_connected_components(closed_anom, min_anom_area):
+            x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+            bw, bh = x2 - x1 + 1, y2 - y1 + 1
+            if (bw * bh) > 0.40 * (sh * sw):
+                continue
+            if bh / max(bw, 1) >= 1.8:
+                cls_t = "vertical" if "vertical" in yolo_names else ("line" if "line" in yolo_names else "tear")
+            elif bw / max(bh, 1) >= 1.8:
+                cls_t = "horizontal" if "horizontal" in yolo_names else ("line" if "line" in yolo_names else "tear")
+            else:
+                cls_t = "tear"
+            sc = min(0.94, 0.72 + 0.05 * float(anom_score[ys, xs].mean()))
+            results.append(_make_det(cls_t, sc, x1, y1, x2, y2, pad_x=3, pad_y=4))
+        results.sort(key=lambda d: d["score"], reverse=True)
+        return results[:5]
+
+    # =========================================================================
+    # CABANG 2: RONGGA FISIK (SOBEK / LUBANG) & NODA GELAP (DARK STAIN)
+    # =========================================================================
+    if med_gray >= 65.0 and border_med >= 65.0 and std_gray <= 62.0:
+        thresh = min(med_gray * 0.56, med_gray - 1.45 * std_gray, border_med * 0.60)
+        if thresh >= 15.0:
+            dark_mask = gray < thresh
+            frac = float(dark_mask.mean())
+            if 0.002 <= frac <= 0.35:
+                closed_dark = _erode_sep_2d(_dilate_sep_2d(dark_mask, 4, 4), 2, 2)
+                min_area = max(65, int(0.0035 * sh * sw))
+                for ys, xs in _extract_connected_components(closed_dark, min_area):
+                    x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+                    bw, bh = x2 - x1 + 1, y2 - y1 + 1
+                    if (bw * bh) > 0.48 * (sh * sw):
+                        continue
+                    aspect = max(bw / max(bh, 1), bh / max(bw, 1))
+                    ry1, ry2 = max(0, y1 - 3), min(sh, y2 + 4)
+                    rx1, rx2 = max(0, x1 - 3), min(sw, x2 + 4)
+                    roi_grad_patch = grad[ry1:ry2, rx1:rx2]
+                    roi_grad_mean = float(roi_grad_patch.mean())
+                    roi_grad_p90 = float(np.percentile(roi_grad_patch, 90))
+
+                    comp_hits = dark_mask[ys, xs]
+                    raw_pixels = gray[ys, xs][comp_hits] if comp_hits.any() else gray[ys, xs]
+                    core_dark = float(raw_pixels.mean())
+                    core_p15 = float(np.percentile(raw_pixels, 15))
+                    contrast = (med_gray - core_dark) / max(med_gray, 1.0)
+                    if contrast < 0.25 or roi_grad_mean < 10.0:
+                        continue
+
+                    # Rongga sobek/lubang memiliki celah gelap pekat (core_p15 < 56) & serat tajam (roi_grad_p90 >= 55)
+                    is_physical_cavity = (core_p15 < 56.0) and (
+                        roi_grad_p90 >= 55.0 or roi_grad_mean >= 28.0 or core_p15 < 38.0
+                    )
+                    if is_physical_cavity:
+                        raw_fill = float(comp_hits.mean())
+                        is_tear = (aspect >= 1.35) or (raw_fill < 0.78)
+                        target_cls = "tear" if is_tear else "hole"
+                    else:
+                        target_cls = "stain"
+
+                    score = min(0.96, max(0.76, 0.58 + 0.42 * contrast + 0.004 * min(roi_grad_mean, 35.0)))
+                    pad_x = int(bw * 0.08) + 2
+                    pad_y = int(bh * 0.06) + 2
+                    results.append(_make_det(target_cls, score, x1, y1, x2, y2, pad_x=pad_x, pad_y=pad_y))
+
+    # =========================================================================
+    # CABANG 3: NODA BERWARNA / KROMATIK (CHROMATIC STAIN)
+    # =========================================================================
+    if med_gray >= 85.0 and std_gray <= 58.0:
+        med_rgb = np.median(arr.reshape(-1, 3), axis=0)
+        med_norm = med_rgb / (float(med_rgb.sum()) + 1e-5)
+        px_norm = arr / (arr.sum(axis=2, keepdims=True) + 1e-5)
+        chroma_dist = np.linalg.norm(px_norm - med_norm[None, None, :], axis=2)
+
+        sat = arr.max(axis=2) - arr.min(axis=2)
+        med_sat = float(np.median(sat))
+        sat_excess = sat - med_sat
+        max_ch_drop = np.max(med_rgb[None, None, :] - arr, axis=2)
+
+        chroma_mask = (
+            (chroma_dist > 0.085)
+            & (sat_excess > 24.0)
+            & (max_ch_drop > 35.0)
+            & (gray > 35.0)
+        )
+        c_frac = float(chroma_mask.mean())
+        if 0.003 <= c_frac <= 0.35:
+            closed_chroma = _erode_sep_2d(_dilate_sep_2d(chroma_mask, 3, 2), 1, 1)
+            min_c_area = max(75, int(0.004 * sh * sw))
+            for ys, xs in _extract_connected_components(closed_chroma, min_c_area):
+                x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+                bw, bh = x2 - x1 + 1, y2 - y1 + 1
+                if (bw * bh) > 0.48 * (sh * sw):
+                    continue
+                mean_cd = float(chroma_dist[ys, xs].mean())
+                mean_se = float(sat_excess[ys, xs].mean())
+                score = min(0.95, max(0.78, 0.68 + 0.65 * min(mean_cd, 0.35) + 0.001 * min(mean_se, 80.0)))
+                results.append(_make_det("stain", score, x1, y1, x2, y2, pad_x=3, pad_y=3))
+
+    # Deduplikasi kotak bersarang (nested boxes) dengan kelas yang sama
     results.sort(key=lambda d: d["score"], reverse=True)
-    return results
+    filtered: List[Dict[str, Any]] = []
+    for cand in results:
+        cb = cand["box"]
+        c_area = max(1.0, (cb[2] - cb[0]) * (cb[3] - cb[1]))
+        redundant = False
+        for kept in filtered:
+            kb = kept["box"]
+            k_area = max(1.0, (kb[2] - kb[0]) * (kb[3] - kb[1]))
+            ix1, iy1 = max(cb[0], kb[0]), max(cb[1], kb[1])
+            ix2, iy2 = min(cb[2], kb[2]), min(cb[3], kb[3])
+            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+            iou = inter / (c_area + k_area - inter + 1e-6)
+            containment = inter / min(c_area, k_area)
+            if iou > 0.40 or (cand["class"] == kept["class"] and containment > 0.60):
+                redundant = True
+                break
+        if not redundant:
+            filtered.append(cand)
+    return filtered
 
 
 class Engine:
