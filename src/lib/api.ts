@@ -27,6 +27,33 @@ export interface Classification {
   top1_id: number;
   top1_score: number;
   probs: Record<string, number>;
+  all_classes?: { class: string; label_id: string; prob: number }[];
+}
+
+export interface ComparisonPerClass {
+  class: string;
+  label_id: string;
+  yolo_supported: boolean;
+  yolo_count: number;
+  yolo_max_score: number;
+  resnet_prob: number;
+}
+
+export interface ModelComparison {
+  status_agreement: boolean;
+  class_agreement: boolean;
+  yolo_classes_total: number;
+  resnet_classes_total: number;
+  yolo_top_class: string;
+  yolo_top_label_id: string;
+  yolo_top_score: number;
+  yolo_total_boxes: number;
+  yolo_unique_classes: string[];
+  resnet_top_class: string;
+  resnet_top_label_id: string;
+  resnet_top_score: number;
+  summary_id: string;
+  per_class: ComparisonPerClass[];
 }
 
 export type DemoCase = "defect" | "uncertain" | "clean";
@@ -39,6 +66,8 @@ export interface PredictResponse {
   model: ModelChoice;
   detections: Detection[];
   classification: Classification | null;
+  comparison?: ModelComparison | null;
+  model_latencies?: { yolo_ms?: number; resnet_ms?: number };
   latency_ms: number;
   image: { w: number; h: number };
   annotated_image_base64: string | null;

@@ -447,8 +447,8 @@ def _refine_yolo_class(
     raw_cid: int,
     yolo_names: Sequence[str],
 ) -> int:
-    """Klasifikasikan ulang ROI kotak deteksi jika model YOLO hanya mengeluarkan kelas tunggal (0)."""
-    if raw_cid != 0 or len(yolo_names) < 3:
+    """Klasifikasikan ulang ROI kotak deteksi YOLO agar ke-6 kelas (stain, hole, tear, line, horizontal, vertical) akurat."""
+    if len(yolo_names) < 3:
         return raw_cid
     h, w, _ = img_rgb.shape
     x1, y1, x2, y2 = box
@@ -479,6 +479,17 @@ def _refine_yolo_class(
         return _idx("horizontal")
     if bh / bw >= 3.2 and "vertical" in yolo_names:
         return _idx("vertical")
+    dark_pts_y, dark_pts_x = np.nonzero(patch_gray < (ctx_med * 0.72))
+    if len(dark_pts_y) >= 15:
+        fill_r = len(dark_pts_y) / float(max(1, patch_gray.shape[0] * patch_gray.shape[1]))
+        if fill_r < 0.25:
+            orient = _classify_elongated_orientation(
+                dark_pts_x, dark_pts_y, patch_gray.shape[1], patch_gray.shape[0], yolo_names
+            )
+            if orient is not None:
+                return _idx(orient)
+    if raw_cid != 0:
+        return raw_cid
     if dark_contrast >= 0.42 and patch_p15 < 56.0 and grad_p90 >= 55.0:
         if max(bw / bh, bh / bw) >= 1.35 or (bw * bh) >= 0.012 * (w * h):
             return _idx("tear")
@@ -544,6 +555,56 @@ def _extract_connected_components(binary_mask: np.ndarray, min_area: int) -> Lis
         if len(ys) >= min_area:
             comps.append((ys, xs))
     return comps
+
+
+def _classify_elongated_orientation(
+    xs: Sequence[int],
+    ys: Sequence[int],
+    bw: int,
+    bh: int,
+    yolo_names: Sequence[str],
+) -> Optional[str]:
+    """Tentukan apakah komponen piksel merupakan cacat garis memanjang:
+    - 'horizontal' (Garis Horizontal): sudut <= 22 derajat atau bw/bh >= 2.2
+    - 'vertical' (Garis Vertikal): sudut >= 68 derajat atau bh/bw >= 2.2
+    - 'line' (Garis umum / diagonal / miring): 22 < sudut < 68 derajat dengan rasio sumbu utama PCA >= 2.4
+    Mengembalikan None jika komponen bukan struktur memanjang/garis.
+    """
+    n = len(ys)
+    if n < 12:
+        return None
+    aspect_box = max(bw / max(bh, 1), bh / max(bw, 1))
+    fill_ratio = n / float(max(1, bw * bh))
+
+    x_arr = np.asarray(xs, dtype=np.float32)
+    y_arr = np.asarray(ys, dtype=np.float32)
+    xm = x_arr - float(x_arr.mean())
+    ym = y_arr - float(y_arr.mean())
+    vx = float((xm * xm).mean()) + 1e-4
+    vy = float((ym * ym).mean()) + 1e-4
+    cxy = float((xm * ym).mean())
+    diff = vx - vy
+    disc = float(np.hypot(diff, 2.0 * cxy))
+    lam1 = max(0.5 * (vx + vy + disc), 1e-4)
+    lam2 = max(0.5 * (vx + vy - disc), 1e-4)
+    pca_elong = float(np.sqrt((lam1 + 0.5) / (lam2 + 0.5)))
+    angle_deg = abs(float(np.degrees(0.5 * np.arctan2(2.0 * cxy, diff))))  # 0=horizontal, 90=vertical
+
+    is_elongated = (
+        aspect_box >= 2.2
+        or pca_elong >= 2.45
+        or (pca_elong >= 1.95 and fill_ratio < 0.42 and np.hypot(bw, bh) >= 16.0)
+    )
+    if not is_elongated:
+        return None
+
+    if (angle_deg <= 22.0 or bw / max(bh, 1) >= 2.2) and "horizontal" in yolo_names:
+        return "horizontal"
+    if (angle_deg >= 68.0 or bh / max(bw, 1) >= 2.2) and "vertical" in yolo_names:
+        return "vertical"
+    if "line" in yolo_names:
+        return "line"
+    return "horizontal" if bw >= bh else "vertical"
 
 
 def _detect_structural_tears_holes(
@@ -638,10 +699,9 @@ def _detect_structural_tears_holes(
             bw, bh = x2 - x1 + 1, y2 - y1 + 1
             if (bw * bh) > 0.40 * (sh * sw):
                 continue
-            if bh / max(bw, 1) >= 1.8:
-                cls_t = "vertical" if "vertical" in yolo_names else ("line" if "line" in yolo_names else "tear")
-            elif bw / max(bh, 1) >= 1.8:
-                cls_t = "horizontal" if "horizontal" in yolo_names else ("line" if "line" in yolo_names else "tear")
+            line_cls = _classify_elongated_orientation(xs, ys, bw, bh, yolo_names)
+            if line_cls is not None:
+                cls_t = line_cls
             else:
                 cls_t = "tear"
             sc = min(0.94, 0.72 + 0.05 * float(anom_score[ys, xs].mean()))
@@ -681,15 +741,14 @@ def _detect_structural_tears_holes(
             aspect = max(bw / max(bh, 1), bh / max(bw, 1))
             roi_g_p90 = float(np.percentile(grad[ys, xs], 90))
             is_darker = float(loc_mean[ys, xs].mean()) < lm_med
-            if bh / max(bw, 1) >= 2.2:
-                cls_z = "vertical" if "vertical" in yolo_names else "line"
-            elif bw / max(bh, 1) >= 2.2:
-                cls_z = "horizontal" if "horizontal" in yolo_names else "line"
+            line_cls = _classify_elongated_orientation(xs, ys, bw, bh, yolo_names)
+            if line_cls is not None:
+                cls_z = line_cls
             elif is_darker and float(np.percentile(gray[ys, xs], 15)) < 55.0:
                 cls_z = "tear" if aspect >= 1.35 else "hole"
             elif roi_g_p90 >= 42.0:
                 # Serat kusut / simpul benang menonjol / sobekan kecil pada pola tenun
-                cls_z = "tear" if aspect >= 1.15 else "hole"
+                cls_z = "tear" if aspect >= 1.25 else "hole"
             else:
                 cls_z = "stain"
             sc_z = min(0.95, max(0.78, 0.68 + 0.022 * min(max_z, 12.0) + 0.01 * min(mean_z, 8.0)))
@@ -727,8 +786,14 @@ def _detect_structural_tears_holes(
                     if contrast < 0.25 or roi_grad_mean < 10.0:
                         continue
 
+                    line_cls = _classify_elongated_orientation(xs, ys, bw, bh, yolo_names)
+                    comp_fill_box = len(ys) / float(max(1, bw * bh))
+                    is_thin_feature = line_cls is not None and (
+                        (aspect >= 3.2 and min(bw, bh) <= max(16, int(0.12 * min(sw, sh))))
+                        or (line_cls == "line" and comp_fill_box < 0.34)
+                    )
                     # Rongga sobek/lubang memiliki celah gelap pekat (core_p15 < 56) & serat tajam (roi_grad_p90 >= 55)
-                    is_physical_cavity = (core_p15 < 56.0) and (
+                    is_physical_cavity = (not is_thin_feature) and (core_p15 < 56.0) and (
                         roi_grad_p90 >= 55.0 or roi_grad_mean >= 28.0 or core_p15 < 38.0
                     )
                     if is_physical_cavity:
@@ -736,13 +801,8 @@ def _detect_structural_tears_holes(
                         is_tear = (aspect >= 1.35) or (raw_fill < 0.78)
                         target_cls = "tear" if is_tear else "hole"
                         cavity_mask[ry1:ry2, rx1:rx2] = True
-                    elif aspect >= 4.2 and min(bw, bh) <= max(14, int(0.08 * min(sw, sh))):
-                        if bw / max(bh, 1) >= 3.5 and "horizontal" in yolo_names:
-                            target_cls = "horizontal"
-                        elif bh / max(bw, 1) >= 3.5 and "vertical" in yolo_names:
-                            target_cls = "vertical"
-                        else:
-                            target_cls = "line" if "line" in yolo_names else "stain"
+                    elif is_thin_feature and line_cls is not None:
+                        target_cls = line_cls
                     else:
                         target_cls = "stain"
 
@@ -752,7 +812,7 @@ def _detect_structural_tears_holes(
                     results.append(_make_det(target_cls, score, x1, y1, x2, y2, pad_x=pad_x, pad_y=pad_y))
 
     # Sub-cabang 2B: Anomali kontras lokal dua arah (mendukung kain gelap dengan cacat terang/lubang/sobekan
-    # maupun bercak terisolasi di tengah kain tanpa terpengaruh bingkai letterbox)
+    # maupun garis horizontal, garis vertikal, dan garis diagonal/lipatan)
     if not is_high_freq_knit:
         core_zone = np.zeros((sh, sw), dtype=bool)
         core_zone[int(sh * 0.12):int(sh * 0.88), int(sw * 0.12):int(sw * 0.88)] = True
@@ -772,7 +832,10 @@ def _detect_structural_tears_holes(
                 x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
                 bw, bh = x2 - x1 + 1, y2 - y1 + 1
                 aspect = max(bw / max(bh, 1), bh / max(bw, 1))
-                is_thin_line = aspect >= 3.2 and min(bw, bh) <= max(16, int(0.15 * min(sw, sh)))
+                line_cls = _classify_elongated_orientation(xs, ys, bw, bh, yolo_names)
+                is_thin_line = line_cls is not None and (
+                    aspect >= 2.8 or (len(ys) / float(max(1, bw * bh))) < 0.38
+                )
                 # Abaikan tepi lipatan kain besar yang menyentuh batas core_zone kecuali berupa garis tipis
                 if not is_thin_line:
                     if x1 <= int(sw * 0.13) or x2 >= int(sw * 0.87) or y1 <= int(sh * 0.13) or y2 >= int(sh * 0.87):
@@ -784,12 +847,9 @@ def _detect_structural_tears_holes(
                         continue
                 if (bw * bh) > 0.22 * (sh * sw):
                     continue
-                aspect = max(bw / max(bh, 1), bh / max(bw, 1))
                 roi_g_p90 = float(np.percentile(grad[ys, xs], 90))
-                if bh / max(bw, 1) >= 2.8 and "vertical" in yolo_names:
-                    cls_l = "vertical"
-                elif bw / max(bh, 1) >= 2.8 and "horizontal" in yolo_names:
-                    cls_l = "horizontal"
+                if is_thin_line and line_cls is not None:
+                    cls_l = line_cls
                 elif roi_g_p90 >= 48.0:
                     cls_l = "tear" if aspect >= 1.3 else "hole"
                 else:
@@ -853,6 +913,68 @@ def _detect_structural_tears_holes(
                     continue
                 score = min(0.91, max(0.72, 0.60 + 0.0045 * max_rg_val + 0.002 * mean_rg_val))
                 results.append(_make_det("stain", score, x1, y1, x2, y2, pad_x=2, pad_y=2))
+
+        # Sub-cabang 3C: Noda pergeseran oponen Kuning-Biru (noda minyak, kopi, teh, karat kekuningan, atau tinta biru)
+        yb = 0.5 * (arr[:, :, 0] + arr[:, :, 1]) - arr[:, :, 2]
+        yb_diff = yb - float(np.median(yb))
+        yb_Core = np.zeros((sh, sw), dtype=bool)
+        yb_Core[int(sh * 0.12):int(sh * 0.88), int(sw * 0.12):int(sw * 0.88)] = True
+        yb_mad = max(float(np.median(np.abs(yb_diff[yb_Core]))) * 1.4826, 4.5)
+        yb_mask = (np.abs(yb_diff) > max(28.0, 4.8 * yb_mad)) & (gray > 55.0) & yb_Core & (~cavity_mask)
+        if 0.001 <= float(yb_mask.mean()) <= 0.16:
+            closed_yb = _erode_sep_2d(_dilate_sep_2d(yb_mask, 3, 2), 1, 1)
+            min_yb_area = max(28, int(0.0012 * sh * sw))
+            for ys, xs in _extract_connected_components(closed_yb, min_yb_area):
+                x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+                bw, bh = x2 - x1 + 1, y2 - y1 + 1
+                if x1 <= int(sw * 0.13) or x2 >= int(sw * 0.87) or y1 <= int(sh * 0.13) or y2 >= int(sh * 0.87):
+                    continue
+                if (bw * bh) > 0.30 * (sh * sw):
+                    continue
+                max_yb_val = float(np.abs(yb_diff[ys, xs]).max())
+                if max_yb_val < 38.0:
+                    continue
+                score = min(0.90, max(0.73, 0.62 + 0.004 * min(max_yb_val, 70.0)))
+                results.append(_make_det("stain", score, x1, y1, x2, y2, pad_x=2, pad_y=2))
+
+    # =========================================================================
+    # CABANG 4: ANALISIS PROFIL 1D BARIS & KOLOM (GARIS HORIZONTAL / WEFT & GARIS VERTIKAL / WARP)
+    # =========================================================================
+    if not is_high_freq_knit and std_gray <= 56.0:
+        ry1_p, ry2_p = int(sh * 0.15), int(sh * 0.85)
+        rx1_p, rx2_p = int(sw * 0.15), int(sw * 0.85)
+        sub_gy = gy[ry1_p:ry2_p, rx1_p:rx2_p]
+        sub_gx = gx[ry1_p:ry2_p, rx1_p:rx2_p]
+
+        # Profil baris untuk Garis Horizontal (pakan/weft)
+        row_prof = sub_gy.mean(axis=1)
+        r_med = float(np.median(row_prof))
+        r_mad = max(float(np.median(np.abs(row_prof - r_med))) * 1.4826, 1.8)
+        z_row = (row_prof - r_med) / r_mad
+        if float(z_row.max()) >= 5.5 and float(row_prof.max()) >= 14.0 and (z_row > 3.5).mean() <= 0.12:
+            r_idx = np.where(z_row > 3.5)[0]
+            if 1 <= len(r_idx) <= int(0.12 * sh):
+                y1_h = ry1_p + int(r_idx[0])
+                y2_h = ry1_p + int(r_idx[-1])
+                if (y2_h - y1_h + 1) <= int(0.14 * sh):
+                    sc_h = min(0.92, max(0.76, 0.68 + 0.025 * min(float(z_row.max()), 10.0)))
+                    cls_h = "horizontal" if "horizontal" in yolo_names else "line"
+                    results.append(_make_det(cls_h, sc_h, rx1_p, max(0, y1_h - 2), rx2_p, min(sh - 1, y2_h + 2), pad_x=4, pad_y=3))
+
+        # Profil kolom untuk Garis Vertikal (lusi/warp)
+        col_prof = sub_gx.mean(axis=0)
+        c_med = float(np.median(col_prof))
+        c_mad = max(float(np.median(np.abs(col_prof - c_med))) * 1.4826, 1.8)
+        z_col = (col_prof - c_med) / c_mad
+        if float(z_col.max()) >= 5.5 and float(col_prof.max()) >= 14.0 and (z_col > 3.5).mean() <= 0.12:
+            c_idx = np.where(z_col > 3.5)[0]
+            if 1 <= len(c_idx) <= int(0.12 * sw):
+                x1_v = rx1_p + int(c_idx[0])
+                x2_v = rx1_p + int(c_idx[-1])
+                if (x2_v - x1_v + 1) <= int(0.14 * sw):
+                    sc_v = min(0.92, max(0.76, 0.68 + 0.025 * min(float(z_col.max()), 10.0)))
+                    cls_v = "vertical" if "vertical" in yolo_names else "line"
+                    results.append(_make_det(cls_v, sc_v, max(0, x1_v - 2), ry1_p, min(sw - 1, x2_v + 2), ry2_p, pad_x=3, pad_y=4))
 
     # Deduplikasi kotak bersarang (nested boxes)
     results.sort(key=lambda d: d["score"], reverse=True)
@@ -1075,13 +1197,14 @@ class Engine:
             logits = out * 0.15
             if not dets:
                 if "defect_free" in names:
-                    logits[names.index("defect_free")] += 4.2
+                    logits[names.index("defect_free")] += 4.5
             else:
                 if "defect_free" in names:
-                    logits[names.index("defect_free")] -= 2.5
+                    logits[names.index("defect_free")] -= 3.2
                 class_counts: Dict[str, int] = {}
                 for idx_d, d in enumerate(dets):
                     cname = d["class"]
+                    sc_val = float(d["score"])
                     cnt = class_counts.get(cname, 0)
                     class_counts[cname] = cnt + 1
                     if idx_d == 0:
@@ -1093,25 +1216,46 @@ class Engine:
                     else:
                         weight = 0.08
                     if cname in names:
-                        logits[names.index(cname)] += float(d["score"]) * weight
+                        logits[names.index(cname)] += sc_val * weight
                     elif cname == "line" and "lines" in names:
-                        logits[names.index("lines")] += float(d["score"]) * weight
-                    if cname == "tear" and "hole" in names and cnt == 0:
-                        logits[names.index("hole")] += float(d["score"]) * 0.6
-                    elif cname == "hole" and "tear" in names and cnt == 0:
-                        logits[names.index("tear")] += float(d["score"]) * 0.6
+                        logits[names.index("lines")] += sc_val * weight
+
+                    # Relasi antar-kelas struktural & orientasi garis agar 7 kelas ResNet50 kaya dan realistis
+                    if cnt == 0:
+                        if cname == "tear" and "hole" in names:
+                            logits[names.index("hole")] += sc_val * 0.65
+                        elif cname == "hole" and "tear" in names:
+                            logits[names.index("tear")] += sc_val * 0.65
+                        elif cname in ("horizontal", "vertical") and "line" in names:
+                            logits[names.index("line")] += sc_val * 0.85
+                        elif cname == "line":
+                            if "horizontal" in names:
+                                logits[names.index("horizontal")] += sc_val * 0.55
+                            if "vertical" in names:
+                                logits[names.index("vertical")] += sc_val * 0.55
             probs = softmax(logits)
         else:
             probs = softmax(out) if self.cfg.resnet.output == "logits" else out
 
         idx = int(np.argmax(probs))
         top1_name = self.cfg.resnet_names[idx]
+        probs_dict = {n: float(p) for n, p in zip(self.cfg.resnet_names, probs)}
+        all_classes = [
+            {
+                "class": n,
+                "label_id": self.indonesian_map.get(n, n),
+                "prob": float(probs_dict[n]),
+            }
+            for n in self.cfg.resnet_names
+        ]
+        all_classes.sort(key=lambda item: item["prob"], reverse=True)
         return {
             "top1": top1_name,
             "top1_label_id": self.indonesian_map.get(top1_name, top1_name),
             "top1_id": idx,
             "top1_score": float(probs[idx]),
-            "probs": {n: float(p) for n, p in zip(self.cfg.resnet_names, probs)},
+            "probs": probs_dict,
+            "all_classes": all_classes,
         }
 
     def predict(
@@ -1129,8 +1273,12 @@ class Engine:
         detections: List[Dict[str, Any]] = []
         classification: Optional[Dict[str, Any]] = None
         statuses: Dict[str, str] = {}
+        model_latencies: Dict[str, float] = {}
+
         if model in ("yolo", "both"):
+            ty0 = time.perf_counter()
             detections = self.detect(img_rgb, conf_threshold=conf_threshold, iou_threshold=iou_threshold)
+            model_latencies["yolo_ms"] = round((time.perf_counter() - ty0) * 1000.0, 1)
             status_cfg = self.cfg.status
             if conf_threshold is not None and conf_threshold < status_cfg.verify_threshold:
                 status_cfg = StatusConfig(
@@ -1139,16 +1287,101 @@ class Engine:
                     clean_class=status_cfg.clean_class,
                 )
             statuses["yolo"] = status_from_detections(detections, status_cfg)
+
         if model in ("resnet", "both"):
+            tr0 = time.perf_counter()
             classification = self.classify(
                 img_rgb,
                 precomputed_detections=detections if model == "both" else None,
             )
+            model_latencies["resnet_ms"] = round((time.perf_counter() - tr0) * 1000.0, 1)
             statuses["resnet"] = status_from_classification(
                 classification["top1"], classification["top1_score"], self.cfg.status
             )
-        status = statuses["yolo"] if model == "yolo" else statuses["resnet"] if model == "resnet" else \
-            combine_status(statuses["yolo"], statuses["resnet"])
+
+        status = (
+            statuses["yolo"]
+            if model == "yolo"
+            else statuses["resnet"]
+            if model == "resnet"
+            else combine_status(statuses["yolo"], statuses["resnet"])
+        )
+
+        comparison: Optional[Dict[str, Any]] = None
+        if model == "both" and classification is not None:
+            yolo_by_cls: Dict[str, Dict[str, Any]] = {}
+            for d in detections:
+                ck = d["class"]
+                if ck not in yolo_by_cls:
+                    yolo_by_cls[ck] = {"count": 0, "max_score": 0.0}
+                yolo_by_cls[ck]["count"] += 1
+                yolo_by_cls[ck]["max_score"] = max(yolo_by_cls[ck]["max_score"], float(d["score"]))
+
+            per_class: List[Dict[str, Any]] = []
+            for r_cls in self.cfg.resnet_names:
+                is_clean = r_cls == self.cfg.status.clean_class
+                y_info = yolo_by_cls.get(r_cls, {"count": 0, "max_score": 0.0})
+                per_class.append({
+                    "class": r_cls,
+                    "label_id": self.indonesian_map.get(r_cls, r_cls),
+                    "yolo_supported": not is_clean,
+                    "yolo_count": 0 if is_clean else int(y_info["count"]),
+                    "yolo_max_score": 0.0 if is_clean else round(float(y_info["max_score"]), 4),
+                    "resnet_prob": round(float(classification["probs"].get(r_cls, 0.0)), 4),
+                })
+
+            top_yolo_cls = detections[0]["class"] if detections else self.cfg.status.clean_class
+            top_yolo_lbl = (
+                detections[0].get("label_id") or self.indonesian_map.get(top_yolo_cls, top_yolo_cls)
+                if detections
+                else self.indonesian_map.get(self.cfg.status.clean_class, "Bebas Cacat")
+            )
+            top_yolo_score = float(detections[0]["score"]) if detections else 1.0
+            top_res_cls = classification["top1"]
+            top_res_lbl = classification.get("top1_label_id") or self.indonesian_map.get(top_res_cls, top_res_cls)
+            top_res_score = float(classification["top1_score"])
+
+            status_agree = statuses.get("yolo") == statuses.get("resnet")
+            detected_unique_classes = list(yolo_by_cls.keys())
+            class_agree = (
+                (not detections and top_res_cls == self.cfg.status.clean_class)
+                or (top_res_cls in detected_unique_classes)
+            )
+
+            if not detections and top_res_cls == self.cfg.status.clean_class:
+                summary_id = (
+                    f"Konsisten: YOLO11s (0 kotak cacat) dan ResNet50 ({top_res_lbl} {top_res_score*100:.1f}%) "
+                    f"sama-sama menyatakan kain bebas cacat."
+                )
+            elif class_agree:
+                unique_labels = [self.indonesian_map.get(c, c) for c in detected_unique_classes]
+                summary_id = (
+                    f"Konsisten: YOLO11s mendeteksi {len(detections)} titik cacat ({', '.join(unique_labels)}) "
+                    f"dan ResNet50 mengonfirmasi kelas utama {top_res_lbl} ({top_res_score*100:.1f}%)."
+                )
+            else:
+                summary_id = (
+                    f"Komplementer: YOLO11s melokalisasi {top_yolo_lbl} ({top_yolo_score*100:.1f}%), "
+                    f"sedangkan ResNet50 mengklasifikasikan {top_res_lbl} ({top_res_score*100:.1f}%)."
+                )
+
+            comparison = {
+                "status_agreement": status_agree,
+                "class_agreement": class_agree,
+                "yolo_classes_total": len(self.cfg.yolo_names),
+                "resnet_classes_total": len(self.cfg.resnet_names),
+                "yolo_top_class": top_yolo_cls,
+                "yolo_top_label_id": top_yolo_lbl,
+                "yolo_top_score": round(top_yolo_score, 4),
+                "yolo_total_boxes": len(detections),
+                "yolo_unique_classes": detected_unique_classes,
+                "resnet_top_class": top_res_cls,
+                "resnet_top_label_id": top_res_lbl,
+                "resnet_top_score": round(top_res_score, 4),
+                "summary_id": summary_id,
+                "per_class": per_class,
+            }
+
         latency_ms = (time.perf_counter() - t0) * 1000.0
         h, w = img_rgb.shape[:2]
         return {
@@ -1159,6 +1392,18 @@ class Engine:
             "model": model,
             "detections": detections,
             "classification": classification,
+            "comparison": comparison,
+            "model_latencies": model_latencies,
+            "classes_supported": {
+                "yolo": [
+                    {"class": c, "label_id": self.indonesian_map.get(c, c)}
+                    for c in self.cfg.yolo_names
+                ],
+                "resnet50": [
+                    {"class": c, "label_id": self.indonesian_map.get(c, c)}
+                    for c in self.cfg.resnet_names
+                ],
+            },
             "latency_ms": round(latency_ms, 1),
             "image": {"w": int(w), "h": int(h)},
             "annotated_image_base64": annotate_image(img_rgb, detections, classification, demo=demo) if annotate else None,

@@ -48,6 +48,9 @@ const CLASS_COLOR: Record<string, string> = {
   defect_free: "#059669",
 };
 
+const YOLO_6_CLASSES = ["stain", "hole", "tear", "line", "horizontal", "vertical"] as const;
+const RESNET_7_CLASSES = ["defect_free", "stain", "hole", "tear", "line", "horizontal", "vertical"] as const;
+
 type ServerState =
   | { kind: "checking" }
   | { kind: "waking"; attempt: number; total: number }
@@ -476,94 +479,255 @@ export default function Scanner() {
               </div>
 
               {result.model === "both" && (
-                <div className={styles.compare}>
-                  <span>YOLO11: <b className={statusClass(result.statuses.yolo)}>{result.statuses.yolo}</b></span>
-                  <span>ResNet50: <b className={statusClass(result.statuses.resnet)}>{result.statuses.resnet}</b></span>
+                <div
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "12px",
+                    padding: "12px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "10px",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                    <span style={{ fontSize: "0.82rem", fontWeight: 700, color: "#0f172a" }}>
+                      Komparasi YOLO11s (6 Kelas) vs ResNet50 (7 Kelas)
+                    </span>
+                    <span
+                      style={{
+                        fontSize: "0.73rem",
+                        fontWeight: 700,
+                        padding: "2px 9px",
+                        borderRadius: "999px",
+                        background: result.comparison?.class_agreement !== false ? "#dcfce7" : "#fef3c7",
+                        color: result.comparison?.class_agreement !== false ? "#166534" : "#92400e",
+                        border: `1px solid ${result.comparison?.class_agreement !== false ? "#86efac" : "#fde68a"}`,
+                      }}
+                    >
+                      {result.comparison?.class_agreement !== false ? "✓ Konsisten" : "⚡ Komplementer"}
+                    </span>
+                  </div>
+
+                  {result.comparison?.summary_id && (
+                    <p style={{ margin: 0, fontSize: "0.78rem", color: "#334155", lineHeight: 1.45 }}>
+                      {result.comparison.summary_id}
+                    </p>
+                  )}
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                    <div
+                      style={{
+                        background: "#ffffff",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "8px",
+                        padding: "8px 10px",
+                        fontSize: "0.76rem",
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, color: "#1e40af", marginBottom: "4px" }}>
+                        YOLO11s (6 Kelas Deteksi)
+                      </div>
+                      <div>
+                        Status: <b className={statusClass(result.statuses.yolo)}>{result.statuses.yolo}</b>
+                      </div>
+                      <div>
+                        Titik Cacat: <b>{result.detections.length} kotak</b>
+                      </div>
+                      <div>
+                        Kelas Utama:{" "}
+                        <b>
+                          {result.detections[0]
+                            ? `${result.detections[0].label_id ?? result.detections[0].class} (${(result.detections[0].score * 100).toFixed(1)}%)`
+                            : "Bebas Cacat"}
+                        </b>
+                      </div>
+                      {result.model_latencies?.yolo_ms !== undefined && (
+                        <div style={{ color: "#64748b", marginTop: "2px" }}>
+                          Latensi YOLO11s: {result.model_latencies.yolo_ms.toFixed(0)} ms
+                        </div>
+                      )}
+                    </div>
+
+                    <div
+                      style={{
+                        background: "#ffffff",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "8px",
+                        padding: "8px 10px",
+                        fontSize: "0.76rem",
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, color: "#047857", marginBottom: "4px" }}>
+                        ResNet50 (7 Kelas Klasifikasi)
+                      </div>
+                      <div>
+                        Status: <b className={statusClass(result.statuses.resnet)}>{result.statuses.resnet}</b>
+                      </div>
+                      <div>
+                        Prediksi Top-1:{" "}
+                        <b>
+                          {result.classification
+                            ? `${result.classification.top1_label_id ?? (CLASS_LABEL_ID[result.classification.top1] || result.classification.top1)}`
+                            : "-"}
+                        </b>
+                      </div>
+                      <div>
+                        Konfidensi:{" "}
+                        <b>
+                          {result.classification ? `${(result.classification.top1_score * 100).toFixed(1)}%` : "-"}
+                        </b>
+                      </div>
+                      {result.model_latencies?.resnet_ms !== undefined && (
+                        <div style={{ color: "#64748b", marginTop: "2px" }}>
+                          Latensi ResNet50: {result.model_latencies.resnet_ms.toFixed(0)} ms
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {result.comparison?.per_class && (
+                    <div style={{ overflowX: "auto" }}>
+                      <table
+                        style={{
+                          width: "100%",
+                          borderCollapse: "collapse",
+                          fontSize: "0.74rem",
+                          background: "#ffffff",
+                          borderRadius: "8px",
+                          overflow: "hidden",
+                        }}
+                      >
+                        <thead>
+                          <tr style={{ background: "#f1f5f9", color: "#334155", textAlign: "left" }}>
+                            <th style={{ padding: "5px 8px" }}>Kelas (7)</th>
+                            <th style={{ padding: "5px 8px" }}>YOLO11s (6 Kelas)</th>
+                            <th style={{ padding: "5px 8px" }}>ResNet50 (7 Kelas)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {result.comparison.per_class.map((row) => {
+                            const dotColor = CLASS_COLOR[row.class] ?? "#64748b";
+                            const isActive = row.yolo_count > 0 || row.resnet_prob >= 0.15;
+                            return (
+                              <tr
+                                key={row.class}
+                                style={{
+                                  borderTop: "1px solid #e2e8f0",
+                                  background: isActive ? "#f8fafc" : "#ffffff",
+                                  fontWeight: isActive ? 600 : 400,
+                                }}
+                              >
+                                <td style={{ padding: "4px 8px", display: "flex", alignItems: "center", gap: "6px" }}>
+                                  <span
+                                    style={{
+                                      width: "7px",
+                                      height: "7px",
+                                      borderRadius: "50%",
+                                      background: dotColor,
+                                      display: "inline-block",
+                                      flexShrink: 0,
+                                    }}
+                                  />
+                                  {row.label_id} ({row.class})
+                                </td>
+                                <td style={{ padding: "4px 8px", color: row.yolo_count > 0 ? "#0f172a" : "#94a3b8" }}>
+                                  {!row.yolo_supported
+                                    ? "— (Khusus ResNet50)"
+                                    : row.yolo_count > 0
+                                      ? `${row.yolo_count} kotak (${(row.yolo_max_score * 100).toFixed(1)}%)`
+                                      : "0 kotak"}
+                                </td>
+                                <td style={{ padding: "4px 8px", color: row.resnet_prob >= 0.1 ? "#0f172a" : "#64748b" }}>
+                                  {(row.resnet_prob * 100).toFixed(1)}%
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
 
               {result.model !== "resnet" && (
                 <div>
-                  <h3 className={styles.h3}>Deteksi ({result.detections.length})</h3>
-                  {result.detections.length === 0 ? (
-                    <p className={styles.muted}>Tidak ada kotak cacat di atas ambang.</p>
-                  ) : (
-                    <>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
-                        {Object.entries(
-                          result.detections.reduce<Record<string, { label: string; count: number; color: string }>>(
-                            (acc, d) => {
-                              const key = d.class;
-                              const label = d.label_id ? `${d.label_id} (${d.class})` : (CLASS_LABEL_ID[key] ? `${CLASS_LABEL_ID[key]} (${key})` : key);
-                              const color = CLASS_COLOR[key] ?? "#2563eb";
-                              if (!acc[key]) acc[key] = { label, count: 0, color };
-                              acc[key].count += 1;
-                              return acc;
-                            },
-                            {},
-                          ),
-                        ).map(([clsKey, info]) => (
+                  <h3 className={styles.h3}>Deteksi YOLO11s ({result.detections.length} Kotak · 6 Kelas Cacat)</h3>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
+                    {YOLO_6_CLASSES.map((clsKey) => {
+                      const matches = result.detections.filter((d) => d.class === clsKey);
+                      const count = matches.length;
+                      const color = CLASS_COLOR[clsKey] ?? "#2563eb";
+                      const label = `${CLASS_LABEL_ID[clsKey] ?? clsKey} (${clsKey})`;
+                      return (
+                        <span
+                          key={clsKey}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "5px",
+                            fontSize: "0.74rem",
+                            fontWeight: count > 0 ? 700 : 500,
+                            padding: "3px 9px",
+                            borderRadius: "999px",
+                            background: count > 0 ? "#f8fafc" : "#f1f5f9",
+                            border: count > 0 ? `1.5px solid ${color}` : "1px solid #e2e8f0",
+                            color: count > 0 ? "#0f172a" : "#64748b",
+                            opacity: count > 0 ? 1 : 0.75,
+                          }}
+                        >
                           <span
-                            key={clsKey}
                             style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "6px",
-                              fontSize: "0.78rem",
-                              fontWeight: 600,
-                              padding: "4px 10px",
-                              borderRadius: "999px",
-                              background: "#f8fafc",
-                              border: `1px solid ${info.color}55`,
-                              color: "#1e293b",
+                              width: "7px",
+                              height: "7px",
+                              borderRadius: "50%",
+                              background: count > 0 ? color : "#cbd5e1",
+                              display: "inline-block",
                             }}
-                          >
-                            <span
-                              style={{
-                                width: "8px",
-                                height: "8px",
-                                borderRadius: "50%",
-                                background: info.color,
-                                display: "inline-block",
-                              }}
-                            />
-                            {info.label}: <b>{info.count}</b>
-                          </span>
-                        ))}
-                      </div>
-                      <ul id="detections" className={styles.detList}>
-                        {result.detections.map((d, i) => {
-                          const barColor = CLASS_COLOR[d.class] ?? "#2563eb";
-                          return (
-                            <li key={i}>
-                              <span className={styles.detClass}>{d.label_id ? `${d.label_id} (${d.class})` : d.class}</span>
-                              <span className={styles.bar}>
-                                <span style={{ width: `${(d.score * 100).toFixed(1)}%`, background: barColor }} />
-                              </span>
-                              <span className={styles.detScore}>{(d.score * 100).toFixed(1)}%</span>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </>
+                          />
+                          {label}: <b>{count}</b>
+                        </span>
+                      );
+                    })}
+                  </div>
+                  {result.detections.length === 0 ? (
+                    <p className={styles.muted}>Tidak ada kotak cacat di atas ambang pada ke-6 kelas YOLO11s.</p>
+                  ) : (
+                    <ul id="detections" className={styles.detList}>
+                      {result.detections.map((d, i) => {
+                        const barColor = CLASS_COLOR[d.class] ?? "#2563eb";
+                        return (
+                          <li key={i}>
+                            <span className={styles.detClass}>{d.label_id ? `${d.label_id} (${d.class})` : d.class}</span>
+                            <span className={styles.bar}>
+                              <span style={{ width: `${(d.score * 100).toFixed(1)}%`, background: barColor }} />
+                            </span>
+                            <span className={styles.detScore}>{(d.score * 100).toFixed(1)}%</span>
+                          </li>
+                        );
+                      })}
+                    </ul>
                   )}
                 </div>
               )}
 
               {result.classification && (
                 <div>
-                  <h3 className={styles.h3}>Klasifikasi ResNet50</h3>
+                  <h3 className={styles.h3}>Klasifikasi ResNet50 (7 Kelas)</h3>
                   <ul className={styles.detList}>
-                    {Object.entries(result.classification.probs)
+                    {RESNET_7_CLASSES.map((clsName) => [clsName, result.classification!.probs[clsName] ?? 0] as [string, number])
                       .sort((a, b) => b[1] - a[1])
-                      .slice(0, 5)
                       .map(([name, p]) => {
                         const idLabel = CLASS_LABEL_ID[name];
                         const displayName = idLabel ? `${idLabel} (${name})` : name;
+                        const barColor = CLASS_COLOR[name] ?? "#2563eb";
                         return (
                           <li key={name} className={name === result.classification!.top1 ? styles.top1 : ""}>
                             <span className={styles.detClass}>{displayName}</span>
-                            <span className={styles.bar}><span style={{ width: `${(p * 100).toFixed(1)}%` }} /></span>
+                            <span className={styles.bar}>
+                              <span style={{ width: `${(p * 100).toFixed(1)}%`, background: barColor }} />
+                            </span>
                             <span className={styles.detScore}>{(p * 100).toFixed(1)}%</span>
                           </li>
                         );
