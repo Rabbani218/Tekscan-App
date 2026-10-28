@@ -607,19 +607,22 @@ def _detect_structural_tears_holes(
         }
 
     # =========================================================================
-    # CABANG 1: KAIN RAJUT / TENUN BERPOLA TINGGI (Ladder / Garis Vertikal / Horizontal)
+    # CABANG 1: KAIN RAJUT / TENUN BERPOLA TINGGI (Ladder / Garis / Simpul Benang / Lubang / Sobek)
     # =========================================================================
-    is_high_freq_knit = grad_med > 22.0 and std_gray > 38.0
+    is_high_freq_knit = grad_med > 22.0 and std_gray > 35.0
     if is_high_freq_knit:
         sat = arr.max(axis=2) - arr.min(axis=2)
-        not_annotation = sat < 25.0
+        med_sat_hf = float(np.median(sat))
+        # Abaikan garis anotasi merah terang hanya jika kain dasarnya akromatik (abu-abu/putih)
+        not_annotation = ~((med_sat_hf < 15.0) & ((arr[:, :, 0] - arr[:, :, 1]) > 40.0))
         dark_stitch = (gray < (med_gray - 0.85 * std_gray)) & not_annotation
         local_dark = _box_mean_2d(dark_stitch.astype(np.float32), rx=4, ry=8)
         local_gy = _box_mean_2d(gy * not_annotation.astype(np.float32), rx=4, ry=8)
 
         valid_zone = np.zeros_like(dark_stitch, dtype=bool)
-        valid_zone[int(sh * 0.08):int(sh * 0.82), int(sw * 0.08):int(sw * 0.92)] = True
+        valid_zone[int(sh * 0.08):int(sh * 0.84), int(sw * 0.08):int(sw * 0.92)] = True
 
+        # Sub-cabang 1A: Anomali kerapatan rajutan gelap & gradien vertikal (contoh: Ladder / Garis Vertikal)
         bg_dark_med = float(np.median(local_dark[valid_zone]))
         bg_dark_std = float(local_dark[valid_zone].std()) + 1e-5
         bg_gy_med = float(np.median(local_gy[valid_zone]))
@@ -643,6 +646,54 @@ def _detect_structural_tears_holes(
                 cls_t = "tear"
             sc = min(0.94, 0.72 + 0.05 * float(anom_score[ys, xs].mean()))
             results.append(_make_det(cls_t, sc, x1, y1, x2, y2, pad_x=3, pad_y=4))
+
+        # Sub-cabang 1B: Anomali Z-score rataan lokal & simpangan baku lokal dua arah
+        # (mendeteksi cacat simpul benang terang, kerusakan keteraturan pola, sobekan/lubang kecil,
+        # atau noda pada kain tenun/rajut berpola seperti Cacat-Kain-004.jpg)
+        clean_gray = np.where(not_annotation, gray, med_gray).astype(np.float32)
+        loc_mean = _box_mean_2d(clean_gray, rx=5, ry=5)
+        loc_sq = _box_mean_2d(clean_gray * clean_gray, rx=5, ry=5)
+        loc_std = np.sqrt(np.maximum(0.0, loc_sq - loc_mean * loc_mean))
+
+        lm_vals = loc_mean[valid_zone]
+        lm_med = float(np.median(lm_vals))
+        lm_mad = max(float(np.median(np.abs(lm_vals - lm_med))) * 1.4826, 2.2)
+        z_lm = np.abs(loc_mean - lm_med) / lm_mad
+
+        ls_vals = loc_std[valid_zone]
+        ls_med = float(np.median(ls_vals))
+        ls_mad = max(float(np.median(np.abs(ls_vals - ls_med))) * 1.4826, 2.0)
+        z_ls = np.abs(loc_std - ls_med) / ls_mad
+
+        z_comb = np.maximum(z_lm, 0.80 * z_ls)
+        z_mask = (z_comb > 3.2) & valid_zone & not_annotation
+        closed_z = _erode_sep_2d(_dilate_sep_2d(z_mask, 2, 2), 1, 1)
+        min_z_area = max(18, int(0.0012 * sh * sw))
+        for ys, xs in _extract_connected_components(closed_z, min_z_area):
+            x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+            bw, bh = x2 - x1 + 1, y2 - y1 + 1
+            if (bw * bh) > 0.35 * (sh * sw):
+                continue
+            max_z = float(z_comb[ys, xs].max())
+            mean_z = float(z_comb[ys, xs].mean())
+            if max_z < 4.2:
+                continue
+            aspect = max(bw / max(bh, 1), bh / max(bw, 1))
+            roi_g_p90 = float(np.percentile(grad[ys, xs], 90))
+            is_darker = float(loc_mean[ys, xs].mean()) < lm_med
+            if bh / max(bw, 1) >= 2.2:
+                cls_z = "vertical" if "vertical" in yolo_names else "line"
+            elif bw / max(bh, 1) >= 2.2:
+                cls_z = "horizontal" if "horizontal" in yolo_names else "line"
+            elif is_darker and float(np.percentile(gray[ys, xs], 15)) < 55.0:
+                cls_z = "tear" if aspect >= 1.35 else "hole"
+            elif roi_g_p90 >= 42.0:
+                # Serat kusut / simpul benang menonjol / sobekan kecil pada pola tenun
+                cls_z = "tear" if aspect >= 1.15 else "hole"
+            else:
+                cls_z = "stain"
+            sc_z = min(0.95, max(0.78, 0.68 + 0.022 * min(max_z, 12.0) + 0.01 * min(mean_z, 8.0)))
+            results.append(_make_det(cls_z, sc_z, x1, y1, x2, y2, pad_x=3, pad_y=3))
 
     # =========================================================================
     # CABANG 2: RONGGA FISIK (SOBEK / LUBANG), GARIS (LINE), & NODA GELAP (DARK STAIN)
@@ -699,6 +750,52 @@ def _detect_structural_tears_holes(
                     pad_x = int(bw * 0.08) + 2
                     pad_y = int(bh * 0.06) + 2
                     results.append(_make_det(target_cls, score, x1, y1, x2, y2, pad_x=pad_x, pad_y=pad_y))
+
+    # Sub-cabang 2B: Anomali kontras lokal dua arah (mendukung kain gelap dengan cacat terang/lubang/sobekan
+    # maupun bercak terisolasi di tengah kain tanpa terpengaruh bingkai letterbox)
+    if not is_high_freq_knit:
+        core_zone = np.zeros((sh, sw), dtype=bool)
+        core_zone[int(sh * 0.12):int(sh * 0.88), int(sw * 0.12):int(sw * 0.88)] = True
+        fg_loc = _box_mean_2d(gray, rx=2, ry=2)
+        bg_loc = _box_mean_2d(gray, rx=16, ry=16)
+        loc_diff = fg_loc - bg_loc
+        diff_vals = loc_diff[core_zone]
+        diff_med = float(np.median(diff_vals))
+        diff_mad = max(float(np.median(np.abs(diff_vals - diff_med))) * 1.4826, 4.0)
+        z_diff = np.abs(loc_diff - diff_med) / diff_mad
+        # Ambil anomali lokal yang menonjol (> 4.5 MAD dan selisih mutlak > 22 derajat keabuan)
+        loc_anom_mask = (z_diff > 4.5) & (np.abs(loc_diff) > 22.0) & core_zone & (~cavity_mask)
+        if 0.001 <= float(loc_anom_mask.mean()) <= 0.12:
+            closed_loc = _erode_sep_2d(_dilate_sep_2d(loc_anom_mask, 2, 2), 1, 1)
+            min_loc_area = max(24, int(0.0015 * sh * sw))
+            for ys, xs in _extract_connected_components(closed_loc, min_loc_area):
+                x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+                bw, bh = x2 - x1 + 1, y2 - y1 + 1
+                aspect = max(bw / max(bh, 1), bh / max(bw, 1))
+                is_thin_line = aspect >= 3.2 and min(bw, bh) <= max(16, int(0.15 * min(sw, sh)))
+                # Abaikan tepi lipatan kain besar yang menyentuh batas core_zone kecuali berupa garis tipis
+                if not is_thin_line:
+                    if x1 <= int(sw * 0.13) or x2 >= int(sw * 0.87) or y1 <= int(sh * 0.13) or y2 >= int(sh * 0.87):
+                        continue
+                else:
+                    if y1 <= int(sh * 0.13) and y2 <= int(sh * 0.22):
+                        continue
+                    if y2 >= int(sh * 0.87) and y1 >= int(sh * 0.78):
+                        continue
+                if (bw * bh) > 0.22 * (sh * sw):
+                    continue
+                aspect = max(bw / max(bh, 1), bh / max(bw, 1))
+                roi_g_p90 = float(np.percentile(grad[ys, xs], 90))
+                if bh / max(bw, 1) >= 2.8 and "vertical" in yolo_names:
+                    cls_l = "vertical"
+                elif bw / max(bh, 1) >= 2.8 and "horizontal" in yolo_names:
+                    cls_l = "horizontal"
+                elif roi_g_p90 >= 48.0:
+                    cls_l = "tear" if aspect >= 1.3 else "hole"
+                else:
+                    cls_l = "stain"
+                sc_l = min(0.92, max(0.75, 0.65 + 0.02 * min(float(z_diff[ys, xs].max()), 12.0)))
+                results.append(_make_det(cls_l, sc_l, x1, y1, x2, y2, pad_x=3, pad_y=3))
 
     # =========================================================================
     # CABANG 3: NODA BERWARNA / KROMATIK & PERGESERAN OPONEN WARNA (MULTI-STAIN)
