@@ -238,7 +238,7 @@ def decode_image(data: bytes) -> np.ndarray:
         with Image.open(io.BytesIO(data)) as probe:
             probe.verify()
         img = Image.open(io.BytesIO(data))
-        img = ImageOps.exif_transpose(img)
+        img = ImageOps.exif_transpose(img) or img
         img = img.convert("RGB")
         arr = np.asarray(img, dtype=np.uint8)
     except Exception as exc:  # PIL melempar banyak tipe error berbeda
@@ -260,7 +260,7 @@ def letterbox(img: np.ndarray, new_shape: Tuple[int, int], pad_value: int) -> Tu
     dw = (nw - new_unpad[0]) / 2
     dh = (nh - new_unpad[1]) / 2
     if (w0, h0) != new_unpad:
-        pil_resized = Image.fromarray(img).resize(new_unpad, Image.BILINEAR)
+        pil_resized = Image.fromarray(img).resize(new_unpad, Image.Resampling.BILINEAR)
         img = np.asarray(pil_resized, dtype=np.uint8)
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
@@ -347,7 +347,11 @@ def decode_yolo(
     )
 
 
-_PIL_INTERP = {"bilinear": Image.BILINEAR, "bicubic": Image.BICUBIC, "nearest": Image.NEAREST}
+_PIL_INTERP = {
+    "bilinear": Image.Resampling.BILINEAR,
+    "bicubic": Image.Resampling.BICUBIC,
+    "nearest": Image.Resampling.NEAREST,
+}
 
 
 def preprocess_resnet(img_rgb: np.ndarray, c: ResnetConfig, nchw: bool) -> np.ndarray:
@@ -558,8 +562,8 @@ def _extract_connected_components(binary_mask: np.ndarray, min_area: int) -> Lis
 
 
 def _classify_elongated_orientation(
-    xs: Sequence[int],
-    ys: Sequence[int],
+    xs: Union[Sequence[int], np.ndarray],
+    ys: Union[Sequence[int], np.ndarray],
     bw: int,
     bh: int,
     yolo_names: Sequence[str],
@@ -622,7 +626,7 @@ def _detect_structural_tears_holes(
         return []
     sh = 160
     sw = max(64, min(320, int(round(sh * w / max(h, 1)))))
-    pil_small = Image.fromarray(img_rgb).resize((sw, sh), Image.BILINEAR)
+    pil_small = Image.fromarray(img_rgb).resize((sw, sh), Image.Resampling.BILINEAR)
     arr = np.asarray(pil_small, dtype=np.float32)
     gray = arr.mean(axis=2)
 
@@ -1151,7 +1155,7 @@ class Engine:
         out = self.yolo.run(None, {self.yolo.get_inputs()[0].name: x})[0]
         det = decode_yolo(out, len(self.cfg.yolo_names), conf, iou, c.max_det)
         if det.shape[0]:
-            det[:, :4] = scale_boxes(det[:, :4], c.imgsz, img_rgb.shape[:2])
+            det[:, :4] = scale_boxes(det[:, :4], c.imgsz, (int(img_rgb.shape[0]), int(img_rgb.shape[1])))
 
         is_real_model = not c.file.endswith("_demo.onnx")
         structural = (
@@ -1332,11 +1336,12 @@ class Engine:
                     "resnet_prob": round(float(classification["probs"].get(r_cls, 0.0)), 4),
                 })
 
-            top_yolo_cls = detections[0]["class"] if detections else self.cfg.status.clean_class
+            clean_cls_name = self.cfg.status.clean_class or "defect_free"
+            top_yolo_cls = str(detections[0]["class"]) if detections else clean_cls_name
             top_yolo_lbl = (
-                detections[0].get("label_id") or self.indonesian_map.get(top_yolo_cls, top_yolo_cls)
+                str(detections[0].get("label_id") or self.indonesian_map.get(top_yolo_cls, top_yolo_cls))
                 if detections
-                else self.indonesian_map.get(self.cfg.status.clean_class, "Bebas Cacat")
+                else self.indonesian_map.get(clean_cls_name, "Bebas Cacat")
             )
             top_yolo_score = float(detections[0]["score"]) if detections else 1.0
             top_res_cls = classification["top1"]
@@ -1462,10 +1467,10 @@ class Engine:
         }
 
 
-_FONT_CACHE: Dict[int, ImageFont.ImageFont] = {}
+_FONT_CACHE: Dict[int, Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]] = {}
 
 
-def _font(size: int) -> ImageFont.ImageFont:
+def _font(size: int) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
     if size not in _FONT_CACHE:
         try:
             _FONT_CACHE[size] = ImageFont.load_default(size=size)  # Pillow >= 10.1

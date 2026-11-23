@@ -73,7 +73,7 @@ state: Dict[str, Any] = {
 
 def load_engines():
     """Muat model sesuai state['model_mode']."""
-    current_mode = os.environ.get("MODEL_MODE", state.get("model_mode", "real")).strip().lower()
+    current_mode = str(os.environ.get("MODEL_MODE") or state.get("model_mode") or "real").strip().lower()
     state["model_mode"] = current_mode
     log.info("Memuat engine TEKSCAN dalam MODEL_MODE='%s'", current_mode)
 
