@@ -65,7 +65,7 @@ def test_predict_valid_synthetic_image(client):
         pytest.skip("Model ONNX belum dimuat di server, lewati uji inferensi.")
 
     # Buat gambar RGB 300x300 valid
-    img = Image.new("RGB", (300, 300), color="#808080")
+    img = Image.new("RGB", (300, 300), color=0x808080)
     buf = io.BytesIO()
     img.save(buf, format="JPEG")
     buf.seek(0)
