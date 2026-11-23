@@ -639,6 +639,96 @@ def _detect_structural_tears_holes(
     grad_med = float(np.median(grad))
     border = np.concatenate([gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]])
     border_med = float(np.median(border))
+    border_white_frac = float((border > 240.0).mean())
+
+    # Deteksi latar belakang studio putih murni (misal foto produk e-commerce) dengan flood-fill dari tepi
+    studio_bg = np.zeros((sh, sw), dtype=bool)
+    has_studio_bg = border_white_frac >= 0.78
+    if has_studio_bg:
+        bg_cand = (gray > 238.0) & (grad < 12.0)
+        q_bg: List[Tuple[int, int]] = []
+        for x_b in range(sw):
+            if bg_cand[0, x_b] and not studio_bg[0, x_b]:
+                studio_bg[0, x_b] = True
+                q_bg.append((0, x_b))
+            if bg_cand[sh - 1, x_b] and not studio_bg[sh - 1, x_b]:
+                studio_bg[sh - 1, x_b] = True
+                q_bg.append((sh - 1, x_b))
+        for y_b in range(sh):
+            if bg_cand[y_b, 0] and not studio_bg[y_b, 0]:
+                studio_bg[y_b, 0] = True
+                q_bg.append((y_b, 0))
+            if bg_cand[y_b, sw - 1] and not studio_bg[y_b, sw - 1]:
+                studio_bg[y_b, sw - 1] = True
+                q_bg.append((y_b, sw - 1))
+        while q_bg:
+            cy, cx = q_bg.pop()
+            for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                if 0 <= ny < sh and 0 <= nx < sw and bg_cand[ny, nx] and not studio_bg[ny, nx]:
+                    studio_bg[ny, nx] = True
+                    q_bg.append((ny, nx))
+        # Hanya aktifkan mode studio jika latar putih murni benar-benar dominan (>= 15% luas gambar)
+        if float(studio_bg.mean()) < 0.15:
+            studio_bg[:] = False
+            has_studio_bg = False
+
+    fg_mask = ~studio_bg
+    if has_studio_bg and float(fg_mask.mean()) >= 0.12:
+        med_gray = float(np.median(gray[fg_mask]))
+        std_gray = float(gray[fg_mask].std())
+        grad_med = float(np.median(grad[fg_mask]))
+
+    def _is_false_positive_region(x1: int, y1: int, x2: int, y2: int, cls_name: str) -> bool:
+        bw_r = max(1, x2 - x1 + 1)
+        bh_r = max(1, y2 - y1 + 1)
+        patch_g = gray[y1:y2 + 1, x1:x2 + 1]
+        patch_gr = grad[y1:y2 + 1, x1:x2 + 1]
+        if patch_g.size == 0:
+            return True
+        white_f = float((patch_g > 238.0).mean())
+        bright_f = float((patch_g > 200.0).mean())
+        black_f = float((patch_g < 45.0).mean())
+        mid_f = float(((patch_g >= 60.0) & (patch_g <= 220.0)).mean())
+        gp90_r = float(np.percentile(patch_gr, 90))
+
+        # 1. Teks cetak hitam di atas latar putih murni (misal label "Depan", "Belakang", watermark)
+        if white_f >= 0.35 and black_f >= 0.02 and mid_f <= 0.42 and gp90_r >= 70.0:
+            return True
+
+        # 2. Objek melayang di atas latar studio putih murni (bukan di atas permukaan kain)
+        if has_studio_bg:
+            if float(studio_bg[y1:y2 + 1, x1:x2 + 1].mean()) >= 0.32:
+                return True
+            oy1, oy2 = max(0, y1 - 4), min(sh, y2 + 5)
+            ox1, ox2 = max(0, x1 - 4), min(sw, x2 + 5)
+            ring = studio_bg[oy1:oy2, ox1:ox2].copy()
+            ring[(y1 - oy1):(y2 - oy1 + 1), (x1 - ox1):(x2 - ox1 + 1)] = False
+            ring_total = max(1, (oy2 - oy1) * (ox2 - ox1) - bw_r * bh_r)
+            if float(ring.sum()) / float(ring_total) >= 0.55:
+                return True
+
+        # 3. Objek non-kain di tepi foto pakaian (tangan, gantungan/hanger, latar toko, tag harga)
+        if not has_studio_bg and med_gray < 180.0:
+            # Tepi gantungan/kerah/latar atas yang tipis menyentuh y1 == 0
+            if y1 <= 1 and bh_r < int(0.24 * sh):
+                return True
+            # Latar toko / objek samping menyentuh tepi kiri/kanan pada foto pakaian
+            if (x1 <= 1 or x2 >= sw - 2) and bw_r < int(0.22 * sw) and bh_r > int(0.10 * sh):
+                return True
+            # Tangan / kulit manusia di sudut atas (halus, R > G)
+            if (x1 <= 6 and y1 <= 10) and (bw_r * bh_r) >= int(0.03 * sh * sw) and gp90_r < 28.0:
+                p_rgb = arr[y1:y2 + 1, x1:x2 + 1]
+                if float(p_rgb[:, :, 0].mean()) > float(p_rgb[:, :, 1].mean()) + 1.5:
+                    return True
+            # Label harga putih persegi panjang menggantung di area dada/kerah baju gelap/abu-abu
+            if (
+                med_gray < 155.0
+                and bright_f >= 0.42
+                and bh_r / max(bw_r, 1) >= 1.15
+                and (bw_r * bh_r) >= int(0.02 * sh * sw)
+            ):
+                return True
+        return False
 
     results: List[Dict[str, Any]] = []
 
@@ -765,7 +855,7 @@ def _detect_structural_tears_holes(
     if not is_high_freq_knit and med_gray >= 65.0 and border_med >= 65.0 and std_gray <= 62.0:
         thresh = min(med_gray * 0.56, med_gray - 1.45 * std_gray, border_med * 0.60)
         if thresh >= 15.0:
-            dark_mask = gray < thresh
+            dark_mask = (gray < thresh) & fg_mask
             frac = float(dark_mask.mean())
             if 0.002 <= frac <= 0.35:
                 closed_dark = _erode_sep_2d(_dilate_sep_2d(dark_mask, 4, 4), 2, 2)
@@ -774,6 +864,8 @@ def _detect_structural_tears_holes(
                     x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
                     bw, bh = x2 - x1 + 1, y2 - y1 + 1
                     if (bw * bh) > 0.48 * (sh * sw):
+                        continue
+                    if _is_false_positive_region(x1, y1, x2, y2, "tear"):
                         continue
                     aspect = max(bw / max(bh, 1), bh / max(bw, 1))
                     ry1, ry2 = max(0, y1 - 3), min(sh, y2 + 4)
@@ -861,48 +953,100 @@ def _detect_structural_tears_holes(
                 else:
                     cls_l = "stain"
                 sc_l = min(0.92, max(0.75, 0.65 + 0.02 * min(float(z_diff[ys, xs].max()), 12.0)))
-                results.append(_make_det(cls_l, sc_l, x1, y1, x2, y2, pad_x=3, pad_y=3))
+                if not _is_false_positive_region(x1, y1, x2, y2, cls_l):
+                    results.append(_make_det(cls_l, sc_l, x1, y1, x2, y2, pad_x=3, pad_y=3))
+
+    # Sub-cabang 2C: Lubang / sobekan tembus terang pada kain berwarna gelap atau abu-abu
+    # (misal kaos abu-abu bolong yang menampakkan latar putih/terang di balik lubang)
+    if not is_high_freq_knit and not has_studio_bg and 65.0 <= med_gray <= 165.0 and std_gray <= 52.0:
+        bright_thresh = min(232.0, med_gray + 58.0)
+        bright_mask = (gray > bright_thresh) & fg_mask
+        b_frac = float(bright_mask.mean())
+        if 0.002 <= b_frac <= 0.18:
+            closed_bright = _erode_sep_2d(_dilate_sep_2d(bright_mask, 1, 1), 1, 1)
+            min_b_area = max(14, int(0.0007 * sh * sw))
+            for ys, xs in _extract_connected_components(closed_bright, min_b_area):
+                x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+                bw, bh = x2 - x1 + 1, y2 - y1 + 1
+                # Harus berada di dalam kain, bukan latar tepi
+                if x1 <= 2 or x2 >= sw - 3 or y1 <= 4 or y2 >= sh - 3:
+                    continue
+                if (bw * bh) > 0.06 * (sh * sw):
+                    continue
+                if _is_false_positive_region(x1, y1, x2, y2, "hole"):
+                    continue
+                ry1, ry2 = max(0, y1 - 2), min(sh, y2 + 3)
+                rx1, rx2 = max(0, x1 - 2), min(sw, x2 + 3)
+                rim_gp90 = float(np.percentile(grad[ry1:ry2, rx1:rx2], 90))
+                if rim_gp90 < 36.0:
+                    continue
+                aspect = max(bw / max(bh, 1), bh / max(bw, 1))
+                b_cls = "tear" if aspect >= 1.75 else "hole"
+                sc_b = min(0.93, max(0.76, 0.70 + 0.003 * min(rim_gp90, 75.0)))
+                results.append(_make_det(b_cls, sc_b, x1, y1, x2, y2, pad_x=2, pad_y=2))
 
     # =========================================================================
-    # CABANG 3: NODA BERWARNA / KROMATIK & PERGESERAN OPONEN WARNA (MULTI-STAIN)
+    # CABANG 3: NODA BERWARNA / KROMATIK & LUBANG TEMBUS LATAR BERWARNA
     # =========================================================================
     if not is_high_freq_knit and med_gray >= 75.0 and std_gray <= 58.0:
-        med_rgb = np.median(arr.reshape(-1, 3), axis=0)
+        fg_pixels = arr[fg_mask] if (has_studio_bg and float(fg_mask.mean()) >= 0.12) else arr.reshape(-1, 3)
+        med_rgb = np.median(fg_pixels, axis=0)
         med_norm = med_rgb / (float(med_rgb.sum()) + 1e-5)
         px_norm = arr / (arr.sum(axis=2, keepdims=True) + 1e-5)
         chroma_dist = np.linalg.norm(px_norm - med_norm[None, None, :], axis=2)
 
         sat = arr.max(axis=2) - arr.min(axis=2)
-        med_sat = float(np.median(sat))
+        med_sat = float(np.median(sat[fg_mask] if (has_studio_bg and float(fg_mask.mean()) >= 0.12) else sat))
         sat_excess = sat - med_sat
         max_ch_drop = np.max(med_rgb[None, None, :] - arr, axis=2)
 
-        # Sub-cabang 3A: Noda kromatik saturasi tinggi (saus, anggur, tinta, karat)
+        # Sub-cabang 3A: Area kromatik saturasi tinggi (bedakan noda bertepi lembut vs lubang/sobekan bertepi tajam)
         chroma_mask = (
             (chroma_dist > 0.085)
             & (sat_excess > 24.0)
             & (max_ch_drop > 35.0)
             & (gray > 35.0)
+            & fg_mask
             & (~cavity_mask)
         )
         c_frac = float(chroma_mask.mean())
         if 0.002 <= c_frac <= 0.35:
-            closed_chroma = _erode_sep_2d(_dilate_sep_2d(chroma_mask, 3, 2), 1, 1)
-            min_c_area = max(65, int(0.0035 * sh * sw))
+            dil_rx = 1 if has_studio_bg else 3
+            dil_ry = 1 if has_studio_bg else 2
+            closed_chroma = _erode_sep_2d(_dilate_sep_2d(chroma_mask, dil_rx, dil_ry), 1, 1)
+            min_c_area = max(30 if has_studio_bg else 65, int((0.0012 if has_studio_bg else 0.0035) * sh * sw))
             for ys, xs in _extract_connected_components(closed_chroma, min_c_area):
                 x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
                 bw, bh = x2 - x1 + 1, y2 - y1 + 1
-                if (bw * bh) > 0.48 * (sh * sw):
+                if (bw * bh) > 0.42 * (sh * sw):
                     continue
+                if _is_false_positive_region(x1, y1, x2, y2, "stain"):
+                    continue
+                ry1, ry2 = max(0, y1 - 2), min(sh, y2 + 3)
+                rx1, rx2 = max(0, x1 - 2), min(sw, x2 + 3)
+                rim_gp90 = float(np.percentile(grad[ry1:ry2, rx1:rx2], 90))
+                inner_g_med = float(np.median(grad[ys, xs]))
+                aspect = max(bw / max(bh, 1), bh / max(bw, 1))
+                # Lubang/sobekan yang menampakkan latar berwarna (misal manekin/kardus cokelat di balik kaos robek)
+                # memiliki tepi potongan 3D tajam (rim_gp90 >= 38) dengan isi datar/halus (inner_g_med < 14)
+                is_cut_opening = (
+                    (has_studio_bg and rim_gp90 >= 35.0)
+                    or (rim_gp90 >= 44.0 and inner_g_med < 14.0 and (rim_gp90 / max(inner_g_med, 4.0)) >= 3.2)
+                )
+                if is_cut_opening:
+                    c_cls = "tear" if (aspect >= 1.45 or (bw * bh) >= 0.015 * sh * sw) else "hole"
+                else:
+                    c_cls = "stain"
                 mean_cd = float(chroma_dist[ys, xs].mean())
                 mean_se = float(sat_excess[ys, xs].mean())
                 score = min(0.95, max(0.78, 0.68 + 0.65 * min(mean_cd, 0.35) + 0.001 * min(mean_se, 80.0)))
-                results.append(_make_det("stain", score, x1, y1, x2, y2, pad_x=3, pad_y=3))
+                results.append(_make_det(c_cls, score, x1, y1, x2, y2, pad_x=2, pad_y=2))
 
         # Sub-cabang 3B: Noda pergeseran rona/oponen warna (bercak merah muda/pink/kekuningan pada kain robek/putih)
         rg = arr[:, :, 0] - arr[:, :, 1]
-        rg_excess = rg - float(np.median(rg))
-        opp_mask = (rg_excess > 18.0) & (gray > 65.0) & (~cavity_mask)
+        rg_med = float(np.median(rg[fg_mask] if (has_studio_bg and float(fg_mask.mean()) >= 0.12) else rg))
+        rg_excess = rg - rg_med
+        opp_mask = (rg_excess > 18.0) & (gray > 65.0) & fg_mask & (~cavity_mask)
         opp_frac = float(opp_mask.mean())
         if 0.0008 <= opp_frac <= 0.18:
             closed_opp = _erode_sep_2d(_dilate_sep_2d(opp_mask, 4, 2), 1, 1)
@@ -912,13 +1056,27 @@ def _detect_structural_tears_holes(
                 bw, bh = x2 - x1 + 1, y2 - y1 + 1
                 if (bw * bh) > 0.30 * (sh * sw):
                     continue
+                if _is_false_positive_region(x1, y1, x2, y2, "stain"):
+                    continue
                 max_rg_val = float(rg_excess[ys, xs].max())
                 mean_rg_val = float(rg_excess[ys, xs].mean())
                 # Pastikan benar-benar bercak warna menonjol (bukan pinggiran kancing atau bayangan halus)
                 if max_rg_val < 34.0:
                     continue
+                ry1, ry2 = max(0, y1 - 2), min(sh, y2 + 3)
+                rx1, rx2 = max(0, x1 - 2), min(sw, x2 + 3)
+                rim_gp90 = float(np.percentile(grad[ry1:ry2, rx1:rx2], 90))
+                inner_g_med = float(np.median(grad[ys, xs]))
+                aspect = max(bw / max(bh, 1), bh / max(bw, 1))
+                # Jika berada di baju gelap/abu-abu atau foto studio dengan tepi potongan tajam, labeli hole/tear
+                if (not has_studio_bg and med_gray < 145.0 and rim_gp90 >= 42.0) or (
+                    has_studio_bg and rim_gp90 >= 28.0
+                ):
+                    opp_cls = "tear" if aspect >= 1.5 else "hole"
+                else:
+                    opp_cls = "stain"
                 score = min(0.91, max(0.72, 0.60 + 0.0045 * max_rg_val + 0.002 * mean_rg_val))
-                results.append(_make_det("stain", score, x1, y1, x2, y2, pad_x=2, pad_y=2))
+                results.append(_make_det(opp_cls, score, x1, y1, x2, y2, pad_x=2, pad_y=2))
 
         # Sub-cabang 3C: Noda pergeseran oponen Kuning-Biru (noda minyak, kopi, teh, karat kekuningan, atau tinta biru)
         yb = 0.5 * (arr[:, :, 0] + arr[:, :, 1]) - arr[:, :, 2]
@@ -926,9 +1084,9 @@ def _detect_structural_tears_holes(
         yb_Core = np.zeros((sh, sw), dtype=bool)
         yb_Core[int(sh * 0.12):int(sh * 0.88), int(sw * 0.12):int(sw * 0.88)] = True
         yb_mad = max(float(np.median(np.abs(yb_diff[yb_Core]))) * 1.4826, 4.5)
-        yb_mask = (np.abs(yb_diff) > max(28.0, 4.8 * yb_mad)) & (gray > 55.0) & yb_Core & (~cavity_mask)
+        yb_mask = (np.abs(yb_diff) > max(28.0, 4.8 * yb_mad)) & (gray > 55.0) & yb_Core & fg_mask & (~cavity_mask)
         if 0.001 <= float(yb_mask.mean()) <= 0.16:
-            closed_yb = _erode_sep_2d(_dilate_sep_2d(yb_mask, 3, 2), 1, 1)
+            closed_yb = _erode_sep_2d(_dilate_sep_2d(yb_mask, 2, 2), 1, 1)
             min_yb_area = max(28, int(0.0012 * sh * sw))
             for ys, xs in _extract_connected_components(closed_yb, min_yb_area):
                 x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
@@ -937,16 +1095,23 @@ def _detect_structural_tears_holes(
                     continue
                 if (bw * bh) > 0.30 * (sh * sw):
                     continue
+                if _is_false_positive_region(x1, y1, x2, y2, "stain"):
+                    continue
                 max_yb_val = float(np.abs(yb_diff[ys, xs]).max())
                 if max_yb_val < 38.0:
                     continue
+                ry1, ry2 = max(0, y1 - 2), min(sh, y2 + 3)
+                rx1, rx2 = max(0, x1 - 2), min(sw, x2 + 3)
+                rim_gp90 = float(np.percentile(grad[ry1:ry2, rx1:rx2], 90))
+                aspect = max(bw / max(bh, 1), bh / max(bw, 1))
+                yb_cls = ("tear" if aspect >= 1.45 else "hole") if (has_studio_bg and rim_gp90 >= 35.0) else "stain"
                 score = min(0.90, max(0.73, 0.62 + 0.004 * min(max_yb_val, 70.0)))
-                results.append(_make_det("stain", score, x1, y1, x2, y2, pad_x=2, pad_y=2))
+                results.append(_make_det(yb_cls, score, x1, y1, x2, y2, pad_x=2, pad_y=2))
 
     # =========================================================================
     # CABANG 4: ANALISIS PROFIL 1D BARIS & KOLOM (GARIS HORIZONTAL / WEFT & GARIS VERTIKAL / WARP)
     # =========================================================================
-    if not is_high_freq_knit and std_gray <= 56.0:
+    if not is_high_freq_knit and not has_studio_bg and std_gray <= 56.0:
         ry1_p, ry2_p = int(sh * 0.15), int(sh * 0.85)
         rx1_p, rx2_p = int(sw * 0.15), int(sw * 0.85)
         sub_gy = gy[ry1_p:ry2_p, rx1_p:rx2_p]
