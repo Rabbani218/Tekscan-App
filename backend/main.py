@@ -241,7 +241,7 @@ def predict(
     if model == "both" and eng.resnet is None:
         model = "yolo"
     elif model == "resnet" and eng.resnet is None:
-        # Fallback ramah jika ResNet50 belum tersedia, beralih ke YOLO11s
+        # Fallback ramah jika ResNet50 belum tersedia, beralih ke YOLO11m
         model = "yolo"
 
     res = eng.predict(

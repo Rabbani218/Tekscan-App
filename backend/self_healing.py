@@ -5,7 +5,7 @@ Menyediakan diagnosis otomatis dan pemulihan mandiri untuk:
 2. Pemeriksaan & instalasi otomatis library Python (onnxruntime, fastapi, pillow, numpy, psutil, dll.)
 3. Deteksi otomatis Node.js/npm lintas lokasi & perbaikan node_modules / lockfile Next.js
 4. Pemeriksaan & pembebasan port (7860 dan 3000) dari proses zombie/beku
-5. Sinkronisasi otomatis model AI asli (YOLO11s & ResNet50) & pembuatan model demo cadangan
+5. Sinkronisasi otomatis model AI asli (YOLO11m & ResNet50) & pembuatan model demo cadangan
 6. Inisialisasi basis data SQLite lokal untuk riwayat pemindaian offline
 7. Pemantauan sumber daya sistem (CPU, RAM, Disk, Penyedia Eksekusi ONNX)
 8. Uji konektivitas web (Vercel, Hugging Face Spaces, Backend Lokal, Frontend Lokal)

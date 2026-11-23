@@ -9,7 +9,7 @@ export default function Home() {
           <div className={styles.brand}>
             <div className={styles.logoIcon} aria-hidden>T</div>
             <span className={styles.title}>TEKSCAN</span>
-            <span className={styles.badgeHeader}>YOLO11 & ResNet50</span>
+            <span className={styles.badgeHeader}>YOLO11m & ResNet50</span>
           </div>
         </div>
       </header>
@@ -18,7 +18,7 @@ export default function Home() {
         <div className={styles.hero}>
           <h1>Sistem Deteksi Cacat Kain</h1>
           <p>
-            Pemindaian kain tekstil real-time berbasis AI dengan model deteksi objek YOLO11 dan klasifikasi pembanding ResNet50.
+            Pemindaian kain tekstil real-time berbasis AI dengan model deteksi objek YOLO11m (Medium · 6 kelas) dan klasifikasi pembanding ResNet50 (7 kelas).
           </p>
         </div>
 

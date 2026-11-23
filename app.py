@@ -202,7 +202,7 @@ class TekscanController:
             self.log(f"Model AI disinkronkan otomatis: {', '.join(synced)}", "HEAL")
         real_ok, missing_real = self.healer.check_models("real")
         if real_ok:
-            self.log("Model Produksi AI (YOLO11s & ResNet50) lengkap & terverifikasi.", "OK")
+            self.log("Model Produksi AI (YOLO11m & ResNet50) lengkap & terverifikasi.", "OK")
         else:
             self.log(f"Model real kurang ({missing_real}), memastikan model demo siap...", "WARN")
             ok_demo, msg_demo = self.healer.heal_demo_models()
@@ -1094,7 +1094,7 @@ class TekscanDesktopApp:
                     m_mode = hdata.get("model_mode", "real").upper()
                     yolo_f = hdata.get("models", {}).get("yolo") or "N/A"
                     resnet_f = hdata.get("models", {}).get("resnet") or "N/A"
-                    model_summary = f"Mode: {m_mode}  |  YOLO11s ({yolo_f}) & ResNet50 ({resnet_f})"
+                    model_summary = f"Mode: {m_mode}  |  YOLO11m ({yolo_f}) & ResNet50 ({resnet_f})"
             except Exception:
                 pass
 

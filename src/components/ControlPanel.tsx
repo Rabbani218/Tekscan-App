@@ -206,7 +206,7 @@ export default function ControlPanel({ isOpen, onClose, onModelModeChange }: Con
                   </div>
                   <div className={styles.cardValue}>{modelMode === "real" ? "Model Asli Colab" : "Model Demo Tiruan"}</div>
                   <div className={styles.cardMeta}>
-                    {diag?.models?.real_ready ? "Model produksi YOLO11s siap (6 kelas)" : "Model produksi siap"}
+                    {diag?.models?.real_ready ? "Model produksi YOLO11m siap (6 kelas)" : "Model produksi siap"}
                   </div>
                 </div>
 

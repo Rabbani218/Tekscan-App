@@ -17,6 +17,7 @@ export interface Detection {
   label_id?: string;
   class_id: number;
   score: number;
+  area_pct?: number;
   /** [x1, y1, x2, y2] dalam piksel gambar yang dikirim */
   box: [number, number, number, number];
 }
@@ -56,17 +57,28 @@ export interface ModelComparison {
   per_class: ComparisonPerClass[];
 }
 
+export interface QcMetrics {
+  severity: "BERSIH" | "RINGAN" | "SEDANG" | "BERAT";
+  grade: "Grade A" | "Grade B" | "Grade C" | "Reject";
+  defect_area_pct: number;
+  total_defects: number;
+  unique_defect_types: number;
+  recommendation: string;
+}
+
 export type DemoCase = "defect" | "uncertain" | "clean";
 
 export interface PredictResponse {
   demo?: boolean;
   model_mode?: "real" | "demo";
+  yolo_variant?: string;
   status: ScanStatus;
   statuses: Partial<Record<"yolo" | "resnet", ScanStatus>>;
   model: ModelChoice;
   detections: Detection[];
   classification: Classification | null;
   comparison?: ModelComparison | null;
+  qc_metrics?: QcMetrics | null;
   model_latencies?: { yolo_ms?: number; resnet_ms?: number };
   latency_ms: number;
   image: { w: number; h: number };

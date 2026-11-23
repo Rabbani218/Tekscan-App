@@ -20,6 +20,8 @@
   "fallback_format": "RGB",
   "yolo": {
     "file": "tekscan_yolo.onnx",
+    "variant": "YOLO11m",
+    "architecture": "YOLO11m (Medium · 20.1M params · INT8 ONNX)",
     "imgsz": [
       512,
       512

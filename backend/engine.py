@@ -845,7 +845,9 @@ def _detect_structural_tears_holes(
                         continue
                     if y2 >= int(sh * 0.87) and y1 >= int(sh * 0.78):
                         continue
-                if (bw * bh) > 0.22 * (sh * sw):
+                if not is_thin_line and (bw * bh) > 0.22 * (sh * sw):
+                    continue
+                if is_thin_line and len(ys) > 0.15 * (sh * sw):
                     continue
                 roi_g_p90 = float(np.percentile(grad[ys, xs], 90))
                 if is_thin_line and line_cls is not None:
@@ -1350,24 +1352,25 @@ class Engine:
 
             if not detections and top_res_cls == self.cfg.status.clean_class:
                 summary_id = (
-                    f"Konsisten: YOLO11s (0 kotak cacat) dan ResNet50 ({top_res_lbl} {top_res_score*100:.1f}%) "
+                    f"Konsisten: YOLO11m (0 kotak cacat) dan ResNet50 ({top_res_lbl} {top_res_score*100:.1f}%) "
                     f"sama-sama menyatakan kain bebas cacat."
                 )
             elif class_agree:
                 unique_labels = [self.indonesian_map.get(c, c) for c in detected_unique_classes]
                 summary_id = (
-                    f"Konsisten: YOLO11s mendeteksi {len(detections)} titik cacat ({', '.join(unique_labels)}) "
+                    f"Konsisten: YOLO11m mendeteksi {len(detections)} titik cacat ({', '.join(unique_labels)}) "
                     f"dan ResNet50 mengonfirmasi kelas utama {top_res_lbl} ({top_res_score*100:.1f}%)."
                 )
             else:
                 summary_id = (
-                    f"Komplementer: YOLO11s melokalisasi {top_yolo_lbl} ({top_yolo_score*100:.1f}%), "
+                    f"Komplementer: YOLO11m melokalisasi {top_yolo_lbl} ({top_yolo_score*100:.1f}%), "
                     f"sedangkan ResNet50 mengklasifikasikan {top_res_lbl} ({top_res_score*100:.1f}%)."
                 )
 
             comparison = {
                 "status_agreement": status_agree,
                 "class_agreement": class_agree,
+                "yolo_variant": "YOLO11m",
                 "yolo_classes_total": len(self.cfg.yolo_names),
                 "resnet_classes_total": len(self.cfg.resnet_names),
                 "yolo_top_class": top_yolo_cls,
@@ -1384,15 +1387,64 @@ class Engine:
 
         latency_ms = (time.perf_counter() - t0) * 1000.0
         h, w = img_rgb.shape[:2]
+        img_area = float(max(1, w * h))
+
+        # Hitung metrik QC tekstil (luas area cacat %, tingkat keparahan, grade, rekomendasi)
+        union_mask = np.zeros((min(h, 200), min(w, 200)), dtype=bool)
+        uh, uw = union_mask.shape
+        has_tear_or_hole = False
+        for d in detections:
+            bx1, by1, bx2, by2 = d["box"]
+            box_area = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+            d["area_pct"] = round((box_area / img_area) * 100.0, 2)
+            ux1 = max(0, min(uw, int(round(bx1 * uw / max(w, 1)))))
+            uy1 = max(0, min(uh, int(round(by1 * uh / max(h, 1)))))
+            ux2 = max(0, min(uw, int(round(bx2 * uw / max(w, 1)))))
+            uy2 = max(0, min(uh, int(round(by2 * uh / max(h, 1)))))
+            union_mask[uy1:uy2, ux1:ux2] = True
+            if d["class"] in ("tear", "hole"):
+                has_tear_or_hole = True
+
+        defect_area_pct = round(float(union_mask.mean()) * 100.0, 2) if detections else 0.0
+        total_defects = len(detections)
+
+        if status == STATUS_CLEAN or (model != "resnet" and total_defects == 0):
+            qc_severity = "BERSIH"
+            qc_grade = "Grade A"
+            qc_recommendation = "Lolos QC — Kain bebas cacat dan layak diproses/dikirim."
+        elif defect_area_pct >= 8.0 or total_defects >= 6 or (has_tear_or_hole and defect_area_pct >= 4.0):
+            qc_severity = "BERAT"
+            qc_grade = "Reject"
+            qc_recommendation = "Tolak (Reject QC) — Cacat struktural atau cakupan area melebihi batas toleransi."
+        elif defect_area_pct >= 2.0 or total_defects >= 3 or has_tear_or_hole:
+            qc_severity = "SEDANG"
+            qc_grade = "Grade C"
+            qc_recommendation = "Tahan Batch — Rekomendasi rework atau pemotongan segmen kain yang cacat."
+        else:
+            qc_severity = "RINGAN"
+            qc_grade = "Grade B"
+            qc_recommendation = "Inspeksi Manual — Cacat minor terdeteksi, verifikasi sebelum pengemasan."
+
+        qc_metrics = {
+            "severity": qc_severity,
+            "grade": qc_grade,
+            "defect_area_pct": defect_area_pct,
+            "total_defects": total_defects,
+            "unique_defect_types": len({d["class"] for d in detections}),
+            "recommendation": qc_recommendation,
+        }
+
         return {
             "demo": demo,
             "model_mode": "demo" if demo else "real",
+            "yolo_variant": "YOLO11m",
             "status": status,
             "statuses": statuses,
             "model": model,
             "detections": detections,
             "classification": classification,
             "comparison": comparison,
+            "qc_metrics": qc_metrics,
             "model_latencies": model_latencies,
             "classes_supported": {
                 "yolo": [

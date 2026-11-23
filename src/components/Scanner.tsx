@@ -21,9 +21,9 @@ import {
 import styles from "./Scanner.module.css";
 
 const MODEL_OPTIONS: { value: ModelChoice; label: string; hint: string; badge?: string }[] = [
-  { value: "yolo", label: "YOLO11s", hint: "Deteksi lokasi & kotak cacat tekstil (6 kelas)", badge: "Deteksi Aktif" },
+  { value: "yolo", label: "YOLO11m", hint: "Deteksi lokasi & kotak cacat tekstil (Medium · 6 kelas)", badge: "Deteksi Aktif" },
   { value: "resnet", label: "ResNet50", hint: "Klasifikasi jenis cacat & kain bersih (7 kelas)", badge: "Klasifikasi Aktif" },
-  { value: "both", label: "Keduanya", hint: "Bandingkan YOLO11s dan ResNet50 sekaligus", badge: "Komparasi Aktif" },
+  { value: "both", label: "Keduanya", hint: "Bandingkan YOLO11m dan ResNet50 sekaligus", badge: "Komparasi Aktif" },
 ];
 
 const CLASS_LABEL_ID: Record<string, string> = {
@@ -117,7 +117,44 @@ export default function Scanner() {
   const [dbState, setDbState] = useState<"unknown" | "saved" | "disabled" | "error">("unknown");
   const [historyKey, setHistoryKey] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [showOriginal, setShowOriginal] = useState(false);
   const lastFileRef = useRef<File | null>(null);
+
+  const downloadAnnotated = useCallback(() => {
+    if (!result?.annotated_image_base64) return;
+    const a = document.createElement("a");
+    a.href = `data:image/jpeg;base64,${result.annotated_image_base64}`;
+    const base = (fileName || "tekscan_kain").replace(/\.[^.]+$/, "");
+    a.download = `${base}_yolo11m_hasil.jpg`;
+    a.click();
+  }, [result, fileName]);
+
+  const exportQcReport = useCallback(() => {
+    if (!result) return;
+    const payload = {
+      app: "TEKSCAN AI (YOLO11m & ResNet50)",
+      timestamp: new Date().toISOString(),
+      file_name: fileName,
+      model: result.model,
+      yolo_variant: result.yolo_variant ?? "YOLO11m",
+      status: result.status,
+      statuses: result.statuses,
+      latency_ms: result.latency_ms,
+      model_latencies: result.model_latencies,
+      qc_metrics: result.qc_metrics,
+      detections: result.detections,
+      classification: result.classification,
+      comparison: result.comparison,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const base = (fileName || "tekscan_kain").replace(/\.[^.]+$/, "");
+    a.download = `${base}_laporan_qc.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [result, fileName]);
 
   // kamera
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -386,7 +423,7 @@ export default function Scanner() {
                   e.target.value = "";
                 }}
               />
-              {result?.annotated_image_base64 ? (
+              {result?.annotated_image_base64 && !showOriginal ? (
                 // eslint-disable-next-line @next/next/no-img-element -- data URL dari backend
                 <img id="annotated-image" className={styles.preview} src={`data:image/jpeg;base64,${result.annotated_image_base64}`} alt={`Hasil anotasi ${fileName ?? ""}`} />
               ) : previewUrl ? (
@@ -427,6 +464,93 @@ export default function Scanner() {
                   {cameraOn ? "Hentikan" : "Mulai kamera"}
                 </button>
                 {cameraOn && <span className={styles.muted}>{frames} bingkai · pemulusan 3 dari 5</span>}
+              </div>
+            </div>
+          )}
+
+          {mode === "upload" && result?.annotated_image_base64 && (
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "8px",
+                marginTop: "10px",
+                padding: "8px 12px",
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: "10px",
+              }}
+            >
+              <div style={{ display: "flex", gap: "6px" }}>
+                <button
+                  type="button"
+                  onClick={() => setShowOriginal(false)}
+                  style={{
+                    fontSize: "0.78rem",
+                    fontWeight: 600,
+                    padding: "5px 10px",
+                    borderRadius: "7px",
+                    border: "1px solid #cbd5e1",
+                    cursor: "pointer",
+                    background: !showOriginal ? "#2563eb" : "#ffffff",
+                    color: !showOriginal ? "#ffffff" : "#334155",
+                  }}
+                >
+                  Hasil Deteksi
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowOriginal(true)}
+                  disabled={!previewUrl}
+                  style={{
+                    fontSize: "0.78rem",
+                    fontWeight: 600,
+                    padding: "5px 10px",
+                    borderRadius: "7px",
+                    border: "1px solid #cbd5e1",
+                    cursor: previewUrl ? "pointer" : "not-allowed",
+                    background: showOriginal ? "#2563eb" : "#ffffff",
+                    color: showOriginal ? "#ffffff" : "#334155",
+                  }}
+                >
+                  Gambar Asli
+                </button>
+              </div>
+              <div style={{ display: "flex", gap: "6px" }}>
+                <button
+                  type="button"
+                  onClick={downloadAnnotated}
+                  style={{
+                    fontSize: "0.78rem",
+                    fontWeight: 600,
+                    padding: "5px 10px",
+                    borderRadius: "7px",
+                    border: "1px solid #bfdbfe",
+                    background: "#eff6ff",
+                    color: "#1d4ed8",
+                    cursor: "pointer",
+                  }}
+                >
+                  ⬇ Unduh Hasil
+                </button>
+                <button
+                  type="button"
+                  onClick={exportQcReport}
+                  style={{
+                    fontSize: "0.78rem",
+                    fontWeight: 600,
+                    padding: "5px 10px",
+                    borderRadius: "7px",
+                    border: "1px solid #a7f3d0",
+                    background: "#ecfdf5",
+                    color: "#047857",
+                    cursor: "pointer",
+                  }}
+                >
+                  📄 Laporan QC (JSON)
+                </button>
               </div>
             </div>
           )}
@@ -478,6 +602,78 @@ export default function Scanner() {
                 </div>
               </div>
 
+              {result.qc_metrics && (
+                <div
+                  style={{
+                    background:
+                      result.qc_metrics.severity === "BERSIH"
+                        ? "#ecfdf5"
+                        : result.qc_metrics.severity === "RINGAN"
+                          ? "#fffbeb"
+                          : result.qc_metrics.severity === "SEDANG"
+                            ? "#fff7ed"
+                            : "#fff1f2",
+                    border: `1px solid ${
+                      result.qc_metrics.severity === "BERSIH"
+                        ? "#a7f3d0"
+                        : result.qc_metrics.severity === "RINGAN"
+                          ? "#fde68a"
+                          : result.qc_metrics.severity === "SEDANG"
+                            ? "#fed7aa"
+                            : "#fecdd3"
+                    }`,
+                    borderRadius: "10px",
+                    padding: "10px 12px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "6px",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                    <span style={{ fontSize: "0.78rem", fontWeight: 700, color: "#0f172a" }}>
+                      Analitik Kualitas Kain (QC)
+                    </span>
+                    <div style={{ display: "flex", gap: "6px" }}>
+                      <span
+                        style={{
+                          fontSize: "0.72rem",
+                          fontWeight: 700,
+                          padding: "2px 8px",
+                          borderRadius: "999px",
+                          background: "#ffffff",
+                          border: "1px solid #cbd5e1",
+                          color: "#0f172a",
+                        }}
+                      >
+                        {result.qc_metrics.grade}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: "0.72rem",
+                          fontWeight: 700,
+                          padding: "2px 8px",
+                          borderRadius: "999px",
+                          background:
+                            result.qc_metrics.severity === "BERSIH"
+                              ? "#059669"
+                              : result.qc_metrics.severity === "RINGAN"
+                                ? "#d97706"
+                                : result.qc_metrics.severity === "SEDANG"
+                                  ? "#ea580c"
+                                  : "#e11d48",
+                          color: "#ffffff",
+                        }}
+                      >
+                        {result.qc_metrics.severity} · {result.qc_metrics.defect_area_pct.toFixed(1)}% area
+                      </span>
+                    </div>
+                  </div>
+                  <p style={{ margin: 0, fontSize: "0.76rem", color: "#334155", lineHeight: 1.4 }}>
+                    {result.qc_metrics.recommendation}
+                  </p>
+                </div>
+              )}
+
               {result.model === "both" && (
                 <div
                   style={{
@@ -492,7 +688,7 @@ export default function Scanner() {
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                     <span style={{ fontSize: "0.82rem", fontWeight: 700, color: "#0f172a" }}>
-                      Komparasi YOLO11s (6 Kelas) vs ResNet50 (7 Kelas)
+                      Komparasi YOLO11m (6 Kelas) vs ResNet50 (7 Kelas)
                     </span>
                     <span
                       style={{
@@ -526,7 +722,7 @@ export default function Scanner() {
                       }}
                     >
                       <div style={{ fontWeight: 700, color: "#1e40af", marginBottom: "4px" }}>
-                        YOLO11s (6 Kelas Deteksi)
+                        YOLO11m (6 Kelas Deteksi)
                       </div>
                       <div>
                         Status: <b className={statusClass(result.statuses.yolo)}>{result.statuses.yolo}</b>
@@ -544,7 +740,7 @@ export default function Scanner() {
                       </div>
                       {result.model_latencies?.yolo_ms !== undefined && (
                         <div style={{ color: "#64748b", marginTop: "2px" }}>
-                          Latensi YOLO11s: {result.model_latencies.yolo_ms.toFixed(0)} ms
+                          Latensi YOLO11m: {result.model_latencies.yolo_ms.toFixed(0)} ms
                         </div>
                       )}
                     </div>
@@ -601,7 +797,7 @@ export default function Scanner() {
                         <thead>
                           <tr style={{ background: "#f1f5f9", color: "#334155", textAlign: "left" }}>
                             <th style={{ padding: "5px 8px" }}>Kelas (7)</th>
-                            <th style={{ padding: "5px 8px" }}>YOLO11s (6 Kelas)</th>
+                            <th style={{ padding: "5px 8px" }}>YOLO11m (6 Kelas)</th>
                             <th style={{ padding: "5px 8px" }}>ResNet50 (7 Kelas)</th>
                           </tr>
                         </thead>
@@ -653,7 +849,7 @@ export default function Scanner() {
 
               {result.model !== "resnet" && (
                 <div>
-                  <h3 className={styles.h3}>Deteksi YOLO11s ({result.detections.length} Kotak · 6 Kelas Cacat)</h3>
+                  <h3 className={styles.h3}>Deteksi YOLO11m ({result.detections.length} Kotak · 6 Kelas Cacat)</h3>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
                     {YOLO_6_CLASSES.map((clsKey) => {
                       const matches = result.detections.filter((d) => d.class === clsKey);
@@ -692,7 +888,7 @@ export default function Scanner() {
                     })}
                   </div>
                   {result.detections.length === 0 ? (
-                    <p className={styles.muted}>Tidak ada kotak cacat di atas ambang pada ke-6 kelas YOLO11s.</p>
+                    <p className={styles.muted}>Tidak ada kotak cacat di atas ambang pada ke-6 kelas YOLO11m.</p>
                   ) : (
                     <ul id="detections" className={styles.detList}>
                       {result.detections.map((d, i) => {
@@ -759,7 +955,7 @@ function ServerBadge({ server, onRetry }: { server: ServerState; onRetry: () => 
       text = "Server Siap (MODE DEMO)";
     } else {
       cls = styles.badgeReady;
-      const m = [server.info.models.yolo && "YOLO11", server.info.models.resnet && "ResNet50"].filter(Boolean).join(" + ");
+      const m = [server.info.models.yolo && "YOLO11m", server.info.models.resnet && "ResNet50"].filter(Boolean).join(" + ");
       text = `Server siap · ${m}`;
     }
   } else if (server.kind === "down") {

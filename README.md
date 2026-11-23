@@ -1,6 +1,6 @@
 # TEKSCAN
 
-Sistem Deteksi Cacat Kain Tekstil real-time berbasis AI menggunakan model **YOLO11** (ONNX, model utama deteksi objek) dan **ResNet50** (ONNX, pembanding klasifikasi).
+Sistem Deteksi Cacat Kain Tekstil real-time berbasis AI menggunakan model **YOLO11m (Medium · INT8 ONNX · 6 kelas)** sebagai detektor objek utama dan **ResNet50 (ONNX · 7 kelas)** sebagai pembanding klasifikasi.
 
 Aplikasi terbagi menjadi dua bagian:
 1. **Frontend**: Next.js 16 (App Router, TypeScript, Vanilla CSS) dideploy di **Vercel via GitHub**.
