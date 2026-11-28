@@ -3,7 +3,9 @@
  * Dipanggil LANGSUNG dari browser — bukan lewat fungsi Vercel.
  */
 
-const DEFAULT_API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:7860").replace(/\/+$/, "");
+const CLOUD_HF_API_URL = "https://alex-universe11-bootcamp-ubsi-kai.hf.space";
+const ENV_API_URL = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/+$/, "");
+const DEFAULT_API_URL = ENV_API_URL || (process.env.NODE_ENV === "production" ? CLOUD_HF_API_URL : "http://localhost:7860");
 
 export function getApiUrl(): string {
   if (typeof window !== "undefined") {
@@ -14,6 +16,12 @@ export function getApiUrl(): string {
       }
     } catch {
       // Abaikan jika localStorage tidak tersedia
+    }
+    if (!ENV_API_URL) {
+      const host = window.location.hostname;
+      if (host !== "localhost" && host !== "127.0.0.1") {
+        return CLOUD_HF_API_URL;
+      }
     }
   }
   return DEFAULT_API_URL;

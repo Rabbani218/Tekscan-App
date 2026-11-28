@@ -39,7 +39,7 @@ DEFAULT_VERCEL_URL = os.environ.get(
 )
 DEFAULT_HF_URL = os.environ.get(
     "TEKSCAN_HF_URL",
-    "https://huggingface.co/spaces",
+    "https://alex-universe11-bootcamp-ubsi-kai.hf.space",
 )
 
 REQUIRED_PYTHON_PACKAGES: Dict[str, str] = {
