@@ -13,8 +13,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY --chown=appuser:appuser engine.py main.py ./
+COPY --chown=appuser:appuser engine.py main.py self_healing.py ./
 COPY --chown=appuser:appuser models/ ./models/
+RUN mkdir -p /app/db && chown -R appuser:appuser /app/db
+
+ENV MODEL_MODE=real
 
 USER appuser
 EXPOSE 7860

@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  API_URL,
   ACCEPTED_TYPES,
   ApiError,
+  getApiUrl,
   health,
   predict,
+  setCustomApiUrl,
   smoothStatus,
   STATUS_CLEAN,
   STATUS_DEFECT,
@@ -944,6 +945,10 @@ export default function Scanner() {
 }
 
 function ServerBadge({ server, onRetry }: { server: ServerState; onRetry: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
+  const activeUrl = getApiUrl();
+
   let cls = styles.badgeChecking;
   let text = "Memeriksa server…";
   if (server.kind === "waking") {
@@ -962,15 +967,86 @@ function ServerBadge({ server, onRetry }: { server: ServerState; onRetry: () => 
     cls = styles.badgeDown;
     text = `Server tidak terjangkau: ${server.message}`;
   }
+
+  const handleSaveUrl = () => {
+    setCustomApiUrl(urlInput);
+    setEditing(false);
+    onRetry();
+  };
+
   return (
-    <div id="server-badge" className={`${styles.badge} ${cls}`} data-state={server.kind}>
+    <div id="server-badge" className={`${styles.badge} ${cls}`} data-state={server.kind} style={{ flexWrap: "wrap" }}>
       <span className={styles.badgeDot} />
       <span className={styles.badgeText}>{text}</span>
-      <code className={styles.badgeUrl}>{API_URL}</code>
+      <code className={styles.badgeUrl}>{activeUrl}</code>
       {server.kind === "down" && (
-        <button className={styles.linkBtn} onClick={onRetry}>
+        <button type="button" className={styles.linkBtn} onClick={onRetry}>
           Coba lagi
         </button>
+      )}
+      <button
+        type="button"
+        className={styles.linkBtn}
+        onClick={() => {
+          setUrlInput(activeUrl);
+          setEditing((v) => !v);
+        }}
+      >
+        {editing ? "Tutup" : "Atur URL API"}
+      </button>
+      {editing && (
+        <div style={{ display: "flex", gap: "6px", width: "100%", marginTop: "6px", alignItems: "center" }}>
+          <input
+            type="url"
+            value={urlInput}
+            onChange={(e) => setUrlInput(e.target.value)}
+            placeholder="https://username-space.hf.space atau http://localhost:7860"
+            style={{
+              flex: 1,
+              fontSize: "0.78rem",
+              padding: "4px 8px",
+              borderRadius: "6px",
+              border: "1px solid #cbd5e1",
+              background: "#ffffff",
+              color: "#0f172a",
+            }}
+          />
+          <button
+            type="button"
+            onClick={handleSaveUrl}
+            style={{
+              fontSize: "0.75rem",
+              fontWeight: 600,
+              padding: "4px 10px",
+              borderRadius: "6px",
+              border: "none",
+              background: "#2563eb",
+              color: "#ffffff",
+              cursor: "pointer",
+            }}
+          >
+            Simpan & Hubungkan
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCustomApiUrl(null);
+              setEditing(false);
+              onRetry();
+            }}
+            style={{
+              fontSize: "0.75rem",
+              padding: "4px 8px",
+              borderRadius: "6px",
+              border: "1px solid #cbd5e1",
+              background: "#ffffff",
+              color: "#475569",
+              cursor: "pointer",
+            }}
+          >
+            Reset
+          </button>
+        </div>
       )}
     </div>
   );

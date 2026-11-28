@@ -143,15 +143,28 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="TEKSCAN API", version="2.2.0", lifespan=lifespan)
+app = FastAPI(title="TEKSCAN API", version="2.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https://([a-zA-Z0-9-]+\.)*vercel\.app$|^http://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
     allow_credentials=False,
     max_age=600,
 )
+
+
+@app.get("/")
+def root_health():
+    """Endpoint root untuk health-check Hugging Face Spaces Docker SDK."""
+    return {
+        "status": "ok" if state["engine"] is not None else "degraded",
+        "service": "TEKSCAN Backend API (YOLO11m & ResNet50)",
+        "model_mode": state.get("model_mode", "real"),
+        "health": "/health",
+        "docs": "/docs",
+    }
 
 
 def _error(code: int, msg: str) -> HTTPException:

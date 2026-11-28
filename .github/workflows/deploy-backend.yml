@@ -42,14 +42,17 @@ jobs:
           fi
 
           echo "Mengunggah konten backend/ ke Hugging Face Space: $HF_SPACE ..."
-          python -c "
+          python - <<'PY'
+          import os
           from huggingface_hub import HfApi
-          api = HfApi(token='$HF_TOKEN')
+
+          api = HfApi(token=os.environ["HF_TOKEN"])
           api.upload_folder(
-              folder_path='backend',
-              repo_id='$HF_SPACE',
-              repo_type='space',
-              commit_message='Deploy backend from GitHub Actions'
+              folder_path="backend",
+              repo_id=os.environ["HF_SPACE"],
+              repo_type="space",
+              ignore_patterns=["__pycache__/*", "**/.venv/*", "*.pyc", "tests/*", "models_demo/*", "*_demo.onnx"],
+              commit_message="Deploy TEKSCAN YOLO11m & ResNet50 backend from GitHub Actions",
           )
-          "
+          PY
           echo "Sinkronisasi ke Hugging Face Space selesai."

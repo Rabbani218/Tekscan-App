@@ -3,7 +3,37 @@
  * Dipanggil LANGSUNG dari browser — bukan lewat fungsi Vercel.
  */
 
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:7860").replace(/\/+$/, "");
+const DEFAULT_API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:7860").replace(/\/+$/, "");
+
+export function getApiUrl(): string {
+  if (typeof window !== "undefined") {
+    try {
+      const saved = window.localStorage.getItem("tekscan_api_url");
+      if (saved && /^https?:\/\//i.test(saved.trim())) {
+        return saved.trim().replace(/\/+$/, "");
+      }
+    } catch {
+      // Abaikan jika localStorage tidak tersedia
+    }
+  }
+  return DEFAULT_API_URL;
+}
+
+export function setCustomApiUrl(url: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    const clean = (url || "").trim().replace(/\/+$/, "");
+    if (clean && /^https?:\/\//i.test(clean)) {
+      window.localStorage.setItem("tekscan_api_url", clean);
+    } else {
+      window.localStorage.removeItem("tekscan_api_url");
+    }
+  } catch {
+    // Abaikan error storage
+  }
+}
+
+export const API_URL = DEFAULT_API_URL;
 
 export type ModelChoice = "yolo" | "resnet" | "both";
 
@@ -199,7 +229,7 @@ async function fetchWithWake(
       res = await fetch(input, init);
     } catch {
       lastKind = "network";
-      lastMsg = `Tidak dapat terhubung ke server ${API_URL}. Periksa koneksi internet, NEXT_PUBLIC_API_URL, dan ALLOWED_ORIGINS (CORS) di backend.`;
+      lastMsg = `Tidak dapat terhubung ke server ${getApiUrl()}. Periksa koneksi internet, NEXT_PUBLIC_API_URL, dan ALLOWED_ORIGINS (CORS) di backend.`;
       continue;
     }
     if (COLD_START_CODES.has(res.status)) {
@@ -213,7 +243,7 @@ async function fetchWithWake(
 }
 
 export async function health(onWaiting?: (attempt: number, total: number) => void): Promise<HealthResponse> {
-  const res = await fetchWithWake(`${API_URL}/health`, { method: "GET", cache: "no-store" }, onWaiting);
+  const res = await fetchWithWake(`${getApiUrl()}/health`, { method: "GET", cache: "no-store" }, onWaiting);
   if (!res.ok) throw new ApiError("server", await readError(res), res.status);
   return res.json();
 }
@@ -239,7 +269,7 @@ export async function predict(
   if (typeof opts.confThreshold === "number") params.set("conf_threshold", String(opts.confThreshold));
   if (typeof opts.iouThreshold === "number") params.set("iou_threshold", String(opts.iouThreshold));
   const res = await fetchWithWake(
-    `${API_URL}/predict?${params.toString()}`,
+    `${getApiUrl()}/predict?${params.toString()}`,
     { method: "POST", body: form, signal: opts.signal },
     opts.onWaiting,
   );
