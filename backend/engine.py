@@ -16,6 +16,7 @@ import base64
 import io
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -240,6 +241,12 @@ def decode_image(data: bytes) -> np.ndarray:
         img = Image.open(io.BytesIO(data))
         img = ImageOps.exif_transpose(img) or img
         img = img.convert("RGB")
+        # Batasi dimensi maksimal ke 1280px agar gambar kamera HP 12MP+ tetap cepat & anti-freeze di CPU
+        max_side = 1280
+        iw, ih = img.size
+        if max(iw, ih) > max_side:
+            scale = max_side / float(max(iw, ih))
+            img = img.resize((max(1, int(round(iw * scale))), max(1, int(round(ih * scale)))), Image.Resampling.BILINEAR)
         arr = np.asarray(img, dtype=np.uint8)
     except Exception as exc:  # PIL melempar banyak tipe error berbeda
         raise ValueError(f"Gambar rusak atau tidak dapat dibaca: {exc}") from exc
@@ -1104,7 +1111,7 @@ def _detect_structural_tears_holes(
                 rx1, rx2 = max(0, x1 - 2), min(sw, x2 + 3)
                 rim_gp90 = float(np.percentile(grad[ry1:ry2, rx1:rx2], 90))
                 aspect = max(bw / max(bh, 1), bh / max(bw, 1))
-                yb_cls = ("tear" if aspect >= 1.45 else "hole") if (has_studio_bg and rim_gp90 >= 35.0) else "stain"
+                yb_cls = ("tear" if aspect >= 1.45 else "hole") if (has_studio_bg and rim_gp90 >= 26.0) else "stain"
                 score = min(0.90, max(0.73, 0.62 + 0.004 * min(max_yb_val, 70.0)))
                 results.append(_make_det(yb_cls, score, x1, y1, x2, y2, pad_x=2, pad_y=2))
 
@@ -1179,8 +1186,12 @@ class Engine:
         t0 = time.perf_counter()
         self.model_dir = Path(model_dir)
         self.cfg = load_config(self.model_dir)
+        self._infer_lock = threading.Lock()
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        so.intra_op_num_threads = min(4, max(1, os.cpu_count() or 2))
+        so.inter_op_num_threads = 1
         providers = ["CPUExecutionProvider"]
         self.yolo: Optional[ort.InferenceSession] = None
         self.resnet: Optional[ort.InferenceSession] = None
@@ -1317,7 +1328,8 @@ class Engine:
         lb, _, _ = letterbox(img_rgb, c.imgsz, c.pad_value)
         x = (lb.astype(np.float32) / 255.0).transpose(2, 0, 1)[None]
         x = np.ascontiguousarray(x)
-        out = self.yolo.run(None, {self.yolo.get_inputs()[0].name: x})[0]
+        with self._infer_lock:
+            out = self.yolo.run(None, {self.yolo.get_inputs()[0].name: x})[0]
         det = decode_yolo(out, len(self.cfg.yolo_names), conf, iou, c.max_det)
         if det.shape[0]:
             det[:, :4] = scale_boxes(det[:, :4], c.imgsz, (int(img_rgb.shape[0]), int(img_rgb.shape[1])))
@@ -1349,7 +1361,7 @@ class Engine:
 
         results.extend(structural)
         results.sort(key=lambda d: d["score"], reverse=True)
-        return results
+        return results[:25]
 
     def classify(
         self,
@@ -1359,7 +1371,8 @@ class Engine:
         if self.resnet is None or self.cfg.resnet is None:
             raise ConfigError("Model ResNet50 tidak dimuat.")
         x = preprocess_resnet(img_rgb, self.cfg.resnet, self.resnet_nchw)
-        out = self.resnet.run(None, {self.resnet.get_inputs()[0].name: x})[0].reshape(-1).astype(np.float64)
+        with self._infer_lock:
+            out = self.resnet.run(None, {self.resnet.get_inputs()[0].name: x})[0].reshape(-1).astype(np.float64)
 
         is_real_resnet = not self.cfg.resnet.file.endswith("_demo.onnx")
         if is_real_resnet and self.yolo is not None:
@@ -1372,38 +1385,42 @@ class Engine:
             else:
                 if "defect_free" in names:
                     logits[names.index("defect_free")] -= 3.2
-                class_counts: Dict[str, int] = {}
-                for idx_d, d in enumerate(dets):
-                    cname = d["class"]
+                # Agregasi per kelas agar kelas yang dominan (skor tinggi + jumlah titik terbanyak) menjadi Top-1
+                cls_stats: Dict[str, Dict[str, float]] = {}
+                for d in dets:
+                    ck = d["class"]
                     sc_val = float(d["score"])
-                    cnt = class_counts.get(cname, 0)
-                    class_counts[cname] = cnt + 1
-                    if idx_d == 0:
-                        weight = 4.6
-                    elif cnt == 0:
-                        weight = 3.4
-                    elif cnt == 1:
-                        weight = 0.45
+                    if ck not in cls_stats:
+                        cls_stats[ck] = {"max_s": sc_val, "count": 1.0}
                     else:
-                        weight = 0.08
-                    if cname in names:
-                        logits[names.index(cname)] += sc_val * weight
-                    elif cname == "line" and "lines" in names:
-                        logits[names.index("lines")] += sc_val * weight
+                        cls_stats[ck]["max_s"] = max(cls_stats[ck]["max_s"], sc_val)
+                        cls_stats[ck]["count"] += 1.0
 
-                    # Relasi antar-kelas struktural & orientasi garis agar 7 kelas ResNet50 kaya dan realistis
-                    if cnt == 0:
-                        if cname == "tear" and "hole" in names:
-                            logits[names.index("hole")] += sc_val * 0.65
-                        elif cname == "hole" and "tear" in names:
-                            logits[names.index("tear")] += sc_val * 0.65
-                        elif cname in ("horizontal", "vertical") and "line" in names:
-                            logits[names.index("line")] += sc_val * 0.85
-                        elif cname == "line":
-                            if "horizontal" in names:
-                                logits[names.index("horizontal")] += sc_val * 0.55
-                            if "vertical" in names:
-                                logits[names.index("vertical")] += sc_val * 0.55
+                ranked_classes = sorted(
+                    cls_stats.items(),
+                    key=lambda kv: kv[1]["max_s"] + 0.04 * min(kv[1]["count"], 6.0),
+                    reverse=True,
+                )
+                for rank_idx, (cname, st) in enumerate(ranked_classes):
+                    max_s = st["max_s"]
+                    cnt = st["count"]
+                    weight = (4.6 if rank_idx == 0 else 3.2) + 0.22 * min(cnt - 1.0, 4.0)
+                    if cname in names:
+                        logits[names.index(cname)] += max_s * weight
+                    elif cname == "line" and "lines" in names:
+                        logits[names.index("lines")] += max_s * weight
+
+                    if cname == "tear" and "hole" in names:
+                        logits[names.index("hole")] += max_s * 0.65
+                    elif cname == "hole" and "tear" in names:
+                        logits[names.index("tear")] += max_s * 0.65
+                    elif cname in ("horizontal", "vertical") and "line" in names:
+                        logits[names.index("line")] += max_s * 0.85
+                    elif cname == "line":
+                        if "horizontal" in names:
+                            logits[names.index("horizontal")] += max_s * 0.55
+                        if "vertical" in names:
+                            logits[names.index("vertical")] += max_s * 0.55
             probs = softmax(logits)
         else:
             probs = softmax(out) if self.cfg.resnet.output == "logits" else out

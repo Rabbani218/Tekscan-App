@@ -224,21 +224,37 @@ async function fetchWithWake(
   input: string,
   init: RequestInit,
   onWaiting?: (attempt: number, total: number) => void,
+  timeoutMs = 25000,
 ): Promise<Response> {
   let lastKind: ApiErrorKind = "network";
   let lastMsg = "";
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
+    if (init.signal?.aborted) {
+      throw new DOMException("Dibatalkan", "AbortError");
+    }
     if (attempt > 0) {
       onWaiting?.(attempt, RETRIES);
       await sleep(RETRY_DELAY_MS);
     }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const onExtAbort = () => ctrl.abort();
+    init.signal?.addEventListener("abort", onExtAbort, { once: true });
     let res: Response;
     try {
-      res = await fetch(input, init);
-    } catch {
+      res = await fetch(input, { ...init, signal: ctrl.signal });
+    } catch (err) {
+      clearTimeout(timer);
+      init.signal?.removeEventListener("abort", onExtAbort);
+      if (init.signal?.aborted) {
+        throw err;
+      }
       lastKind = "network";
-      lastMsg = `Tidak dapat terhubung ke server ${getApiUrl()}. Periksa koneksi internet, NEXT_PUBLIC_API_URL, dan ALLOWED_ORIGINS (CORS) di backend.`;
+      lastMsg = `Koneksi ke ${getApiUrl()} lambat/terputus (timeout). Memastikan server siap…`;
       continue;
+    } finally {
+      clearTimeout(timer);
+      init.signal?.removeEventListener("abort", onExtAbort);
     }
     if (COLD_START_CODES.has(res.status)) {
       lastKind = "cold_start";
@@ -251,7 +267,7 @@ async function fetchWithWake(
 }
 
 export async function health(onWaiting?: (attempt: number, total: number) => void): Promise<HealthResponse> {
-  const res = await fetchWithWake(`${getApiUrl()}/health`, { method: "GET", cache: "no-store" }, onWaiting);
+  const res = await fetchWithWake(`${getApiUrl()}/health`, { method: "GET", cache: "no-store" }, onWaiting, 12000);
   if (!res.ok) throw new ApiError("server", await readError(res), res.status);
   return res.json();
 }

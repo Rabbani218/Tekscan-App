@@ -157,10 +157,12 @@ export default function Scanner() {
     URL.revokeObjectURL(url);
   }, [result, fileName]);
 
-  // kamera
+  // kamera & pembatalan request anti-freeze
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const runningRef = useRef(false);
+  const uploadAbortRef = useRef<AbortController | null>(null);
+  const cameraAbortRef = useRef<AbortController | null>(null);
   const statusHistory = useRef<ScanStatus[]>([]);
   const [cameraOn, setCameraOn] = useState(false);
   const [smoothed, setSmoothed] = useState<ScanStatus | null>(null);
@@ -206,13 +208,18 @@ export default function Scanner() {
           return URL.createObjectURL(file);
         });
       }
+      uploadAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      uploadAbortRef.current = ctrl;
       setBusy(true);
       setWakeMsg(null);
       try {
         const r = await predict(file, activeModel, {
           onWaiting,
+          signal: ctrl.signal,
           demoCase: isDemo ? demoCase : undefined,
         });
+        if (ctrl.signal.aborted) return;
         setResult(r);
         if (server.kind !== "ready") void checkServer();
         void saveScan(r, "upload", file.name).then((saved) => {
@@ -220,10 +227,13 @@ export default function Scanner() {
           if (saved === "saved") setHistoryKey((k) => k + 1);
         });
       } catch (err) {
+        if (ctrl.signal.aborted) return;
         setError(toUiError(err));
       } finally {
-        setBusy(false);
-        setWakeMsg(null);
+        if (uploadAbortRef.current === ctrl) {
+          setBusy(false);
+          setWakeMsg(null);
+        }
       }
     },
     [model, onWaiting, server.kind, checkServer, isDemo, demoCase],
@@ -239,6 +249,8 @@ export default function Scanner() {
   // ---------------- kamera ----------------
   const stopCamera = useCallback(() => {
     runningRef.current = false;
+    cameraAbortRef.current?.abort();
+    cameraAbortRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     setCameraOn(false);
@@ -252,7 +264,7 @@ export default function Scanner() {
     setFrames(0);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false,
       });
       streamRef.current = stream;
@@ -262,19 +274,28 @@ export default function Scanner() {
       setCameraOn(true);
       runningRef.current = true;
       const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      let consecutiveErrors = 0;
       while (runningRef.current) {
         const t0 = performance.now();
-        if (v.videoWidth > 0) {
-          canvas.width = v.videoWidth;
-          canvas.height = v.videoHeight;
-          canvas.getContext("2d")!.drawImage(v, 0, 0);
-          const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", 0.9));
+        if (v.videoWidth > 0 && ctx) {
+          // Langsung perkecil ke maks 512px di canvas (1x encode, anti-lag & hemat bandwidth)
+          const camScale = Math.min(1, 512 / Math.max(v.videoWidth, v.videoHeight));
+          canvas.width = Math.max(1, Math.round(v.videoWidth * camScale));
+          canvas.height = Math.max(1, Math.round(v.videoHeight * camScale));
+          ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+          const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", 0.78));
           if (blob && runningRef.current) {
+            const ctrl = new AbortController();
+            cameraAbortRef.current = ctrl;
             try {
               const r = await predict(blob, model, {
                 onWaiting,
+                shrink: false,
+                signal: ctrl.signal,
                 demoCase: isDemo ? demoCase : undefined,
               });
+              consecutiveErrors = 0;
               setWakeMsg(null);
               if (!runningRef.current) break;
               statusHistory.current = [...statusHistory.current, r.status].slice(-5);
@@ -282,13 +303,17 @@ export default function Scanner() {
               setResult(r);
               setFrames((n) => n + 1);
             } catch (err) {
-              setError(toUiError(err));
-              stopCamera();
-              break;
+              if (!runningRef.current || ctrl.signal.aborted) break;
+              consecutiveErrors += 1;
+              if (consecutiveErrors >= 3) {
+                setError(toUiError(err));
+                stopCamera();
+                break;
+              }
             }
           }
         }
-        const wait = Math.max(0, 700 - (performance.now() - t0));
+        const wait = Math.max(350, 900 - (performance.now() - t0));
         await new Promise((r) => setTimeout(r, wait));
       }
     } catch (err) {
